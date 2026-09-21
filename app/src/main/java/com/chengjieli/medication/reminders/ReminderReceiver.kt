@@ -3,6 +3,7 @@ package com.chengjieli.medication.reminders
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.os.PowerManager
 import android.util.Log
 import android.widget.Toast
 import com.chengjieli.medication.MedicationApplication
@@ -13,9 +14,20 @@ import kotlinx.coroutines.launch
 class ReminderReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val pending = goAsync()
+        val wakeLock = context.getSystemService(PowerManager::class.java)
+            .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "medication:alarm-delivery").apply { acquire(10_000L) }
         val graph = (context.applicationContext as MedicationApplication).graph
         graph.scope.launch {
             try {
+                if (intent.action == ReminderScheduler.ACTION_WAKE) graph.recordDoseAlarmDelivery()
+                if (intent.action == ReminderScheduler.ACTION_TEST_ALARM) {
+                    graph.receiveAlarmTest(intent.getIntExtra(ReminderScheduler.EXTRA_ROUND, -1))
+                }
+                if (intent.action == ReminderScheduler.ACTION_CLOSE_ALARMS) {
+                    val ids = intent.getStringArrayListExtra("alarm_ids").orEmpty()
+                    val rounds = intent.getIntArrayExtra("alarm_rounds") ?: intArrayOf()
+                    graph.closeAlarms(ids.zip(rounds.toList()))
+                }
                 if (intent.action == ReminderScheduler.ACTION_DISMISS) {
                     intent.getStringExtra(ReminderScheduler.EXTRA_ID)?.let {
                         graph.dismissNotification(it, intent.getIntExtra(ReminderScheduler.EXTRA_ROUND, -1))
@@ -39,7 +51,10 @@ class ReminderReceiver : BroadcastReceiver() {
                 graph.refresh()
             } catch (e: Exception) {
                 Log.e("Medication", "Reminder processing failed", e)
-            } finally { pending.finish() }
+            } finally {
+                if (wakeLock.isHeld) wakeLock.release()
+                pending.finish()
+            }
         }
     }
 }

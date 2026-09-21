@@ -80,10 +80,8 @@ class MedicationRepositoryTest {
         repository.restoreSnapshot(forgedOldTaken, original.deadlineAt)
         assertEquals(SkipReason.TIMEOUT, db.dao().occurrence(original.id)!!.skipReason)
         assertNull(db.dao().intake(original.id))
-        try {
-            repository.editIntake(original.id, at, "2", "尝试补记", original.deadlineAt)
-            fail("过期事项不可补记")
-        } catch (_: IllegalArgumentException) { }
+        assertEquals(ActionOutcome.EXPIRED, repository.performAction(original.id, 0, ReminderAction.TAKE, original.deadlineAt))
+        assertNull(db.dao().intake(original.id))
     }
     @Test fun databaseDoesNotCreateForeignKeyConstraints() = runBlocking {
         listOf("medication_cases", "medications", "dose_schedules", "dose_occurrences", "intake_records", "expiry_locks").forEach { table ->
@@ -107,6 +105,62 @@ class MedicationRepositoryTest {
         val started = db.dao().occurrence(original.id)!!
         assertEquals("2", started.quantity)
         assertEquals("测试药品", started.medicineName)
+    }
+    @Test fun completedIntakeCannotBeRewrittenByLaterActionsOrPlanEdits() = runBlocking {
+        assertEquals(ActionOutcome.APPLIED, repository.performAction(original.id, 0, ReminderAction.TAKE, at + 1000))
+        val completed = db.dao().occurrence(original.id)!!
+        val intake = db.dao().intake(original.id)!!
+
+        ReminderAction.entries.forEach { action ->
+            assertEquals(ActionOutcome.NOT_AVAILABLE, repository.performAction(original.id, 0, action, at + 2000))
+        }
+        val medication = db.dao().medications().single()
+        val schedule = db.dao().schedules().single()
+        repository.saveMedication(medication.copy(name = "更新药品", quantityUnit = "片", notes = "新的安排备注"),
+            listOf(schedule.copy(quantity = "3")), at + 3000)
+        repository.setCaseStatus(original.caseId, PlanStatus.PAUSED, at + 4000)
+        repository.reconcile(original.deadlineAt + 1000)
+
+        assertEquals(completed, db.dao().occurrence(original.id))
+        assertEquals(intake, db.dao().intake(original.id))
+        assertEquals(1, db.dao().intakes().size)
+    }
+    @Test fun manuallySkippedRecordCannotBeReplacedWithAnIntake() = runBlocking {
+        assertEquals(ActionOutcome.APPLIED, repository.performAction(original.id, 0, ReminderAction.SKIP, at + 1000))
+        val completed = db.dao().occurrence(original.id)!!
+
+        ReminderAction.entries.forEach { action ->
+            assertEquals(ActionOutcome.NOT_AVAILABLE, repository.performAction(original.id, 0, action, at + 2000))
+        }
+        repository.setMedicationActive(original.medicationId, false, at + 3000)
+        repository.reconcile(original.deadlineAt + 1000)
+
+        assertEquals(completed, db.dao().occurrence(original.id))
+        assertNull(db.dao().intake(original.id))
+    }
+    @Test fun countUnitCorrectionUpdatesFutureButKeepsStartedSnapshot() = runBlocking {
+        val med = db.dao().medications().single()
+        val schedule = db.dao().schedules().single()
+        db.dao().putMedication(med.copy(quantityUnit = "mg"))
+        db.dao().putOccurrence(original.copy(quantityUnit = "mg"))
+        repository.saveMedication(med.copy(quantityUnit = "粒", strengthValue = "120"),
+            listOf(schedule.copy(inputMode = "COUNT", quantity = "2", doseValue = "240")), at + 1000)
+        assertEquals("mg", db.dao().occurrence(original.id)!!.quantityUnit)
+        val future = db.dao().occurrences().filter { it.originalAt > at + 1000 }
+        assertTrue(future.isNotEmpty())
+        assertTrue(future.all { it.quantity == "2" && it.quantityUnit == "粒" && it.doseValue == "240" })
+        assertEquals("COUNT", db.dao().schedules().single().inputMode)
+    }
+    @Test fun newSaveRejectsMassCountUnitButLegacyBackupStillRestores() = runBlocking {
+        val old = repository.snapshot()
+        val legacy = old.copy(medications = old.medications.map { it.copy(quantityUnit = "mg") })
+        repository.restoreSnapshot(legacy, at)
+        assertEquals("mg", db.dao().medications().single().quantityUnit)
+        try {
+            repository.saveMedication(legacy.medications.single(), legacy.schedules, at)
+            fail("数量单位不能为 mg")
+        } catch (_: IllegalArgumentException) { }
+        assertEquals("mg", db.dao().medications().single().quantityUnit)
     }
     @Test fun pauseStopsCurrentAndDeletesFuture() = runBlocking {
         repository.reconcile(at)

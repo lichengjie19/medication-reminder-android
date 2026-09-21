@@ -3,6 +3,7 @@ package com.chengjieli.medication.data
 import android.content.Context
 import androidx.room.withTransaction
 import com.chengjieli.medication.domain.DoseCalculator
+import com.chengjieli.medication.domain.MedicationUnits
 import com.chengjieli.medication.domain.ReminderReducer
 import com.chengjieli.medication.domain.SchedulePlanner
 import java.time.*
@@ -32,6 +33,8 @@ class MedicationRepository internal constructor(private val db: MedicationDataba
 
     suspend fun saveMedication(medication: MedicationEntity, schedules: List<ScheduleEntity>, now: Long = System.currentTimeMillis()) = db.withTransaction {
         validateMedication(medication)
+        // New edits must separate count units from mass. Older backups/history remain readable.
+        require(MedicationUnits.isQuantityUnit(medication.quantityUnit)) { "请选择粒、片等数量单位，mg/g 请填在剂量单位中" }
         require(dao.cases().any { it.id == medication.caseId }) { "所属用药事项不存在" }
         require(schedules.isNotEmpty()) { "请添加至少一个提醒时刻" }
         require(schedules.map { it.id }.distinct().size == schedules.size) { "提醒编号重复" }
@@ -148,22 +151,6 @@ class MedicationRepository internal constructor(private val db: MedicationDataba
             dao.putIntake(IntakeEntity(occurrenceId = id, actualAt = now, quantity = item.quantity, quantityUnit = item.quantityUnit, updatedAt = now))
         }
         result.outcome
-    }
-
-    suspend fun editIntake(occurrenceId: String, actualAt: Long, quantity: String, notes: String, now: Long = System.currentTimeMillis()) = db.withTransaction {
-        require(actualAt in 1..now) { "实际服药时间不能晚于当前时间" }
-        require(DoseCalculator.isPositive(quantity)) { "实际服药数量必须大于零" }
-        reconcileLocked(now)
-        val item = dao.occurrence(occurrenceId) ?: error("服药事项不存在")
-        require(item.status == OccurrenceStatus.TAKEN && item.skipReason != SkipReason.TIMEOUT) { "仅已服用记录可以更正，过期事项不能补记" }
-        val record = dao.intake(occurrenceId) ?: error("服药记录不存在")
-        dao.putIntake(record.copy(actualAt = actualAt, quantity = quantity.trim(), notes = notes, updatedAt = now))
-    }
-
-    suspend fun updateOccurrenceNote(id: String, notes: String) = db.withTransaction {
-        reconcileLocked(System.currentTimeMillis())
-        val item = dao.occurrence(id) ?: error("服药事项不存在")
-        dao.putOccurrence(item.copy(notes = notes))
     }
 
     suspend fun snapshot(): BackupSnapshot = db.withTransaction {

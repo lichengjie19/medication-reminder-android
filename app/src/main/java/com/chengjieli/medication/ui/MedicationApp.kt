@@ -1,7 +1,6 @@
 package com.chengjieli.medication.ui
 
 import androidx.activity.compose.BackHandler
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -14,8 +13,10 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -29,13 +30,11 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.time.LocalDate
 
-private val LightColors = lightColorScheme(primary = Color(0xFF23685B), secondary = Color(0xFF4F6359), tertiary = Color(0xFF705C2E), background = Color(0xFFF7FAF6), surface = Color(0xFFF7FAF6))
-private val DarkColors = darkColorScheme(primary = Color(0xFF91D5C2), secondary = Color(0xFFB6CCBD), tertiary = Color(0xFFDFC38C))
-
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MedicationApp(graph: AppGraph, openTodayRequest: Int = 0) {
-    MaterialTheme(colorScheme = if (isSystemInDarkTheme()) DarkColors else LightColors) {
+    val seniorMode = rememberSeniorModePreference()
+    MedicationTheme(seniorMode = seniorMode.value) {
         val cases by graph.repository.cases.collectAsStateWithLifecycle(initialValue = emptyList())
         val meds by graph.repository.medications.collectAsStateWithLifecycle(initialValue = emptyList())
         val schedules by graph.repository.schedules.collectAsStateWithLifecycle(initialValue = emptyList())
@@ -46,18 +45,22 @@ fun MedicationApp(graph: AppGraph, openTodayRequest: Int = 0) {
         val snackbar = remember { SnackbarHostState() }
         var tab by rememberSaveable { mutableIntStateOf(0) }
         var caseId by rememberSaveable { mutableStateOf<String?>(null) }
+        var historyCaseId by rememberSaveable { mutableStateOf<String?>(null) }
         var caseEditor by rememberSaveable(stateSaver = jsonSaver<CaseEntity?>()) { mutableStateOf<CaseEntity?>(null) }
         var medicationEditor by rememberSaveable(stateSaver = jsonSaver<EditMedicationRequest?>()) { mutableStateOf<EditMedicationRequest?>(null) }
-        var recordEditor by rememberSaveable(stateSaver = jsonSaver<OccurrenceEntity?>()) { mutableStateOf<OccurrenceEntity?>(null) }
+        var recordDetails by rememberSaveable(stateSaver = jsonSaver<OccurrenceEntity?>()) { mutableStateOf<OccurrenceEntity?>(null) }
         var ocrMode by rememberSaveable { mutableStateOf(false) }
         var ocrImages by rememberSaveable { mutableStateOf<List<String>>(emptyList()) }
         var drafts by rememberSaveable(stateSaver = jsonSaver<List<OcrDrugDraft>>()) { mutableStateOf<List<OcrDrugDraft>>(emptyList()) }
         var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
+        var confirmation by remember { mutableStateOf<Pair<OccurrenceEntity, ReminderAction>?>(null) }
         val selectedCase = cases.find { it.id == caseId }
+        val historyGroups = remember(cases, occurrences, now) { historyCaseGroups(cases, occurrences, now) }
+        val selectedHistory = historyGroups.find { it.caseId == historyCaseId }
         LaunchedEffect(openTodayRequest) {
             if (openTodayRequest > 0) {
-                medicationEditor = null; caseEditor = null; recordEditor = null
-                ocrMode = false; caseId = null; tab = 0
+                medicationEditor = null; caseEditor = null; recordDetails = null
+                ocrMode = false; caseId = null; historyCaseId = null; tab = 0; confirmation = null
             }
         }
         LaunchedEffect(graph, lifecycle) {
@@ -75,7 +78,7 @@ fun MedicationApp(graph: AppGraph, openTodayRequest: Int = 0) {
         fun mutate(block: suspend () -> Unit) { scope.launch {
             try { block(); graph.refresh() } catch (e: Exception) { report(e.message ?: "操作失败") }
         } }
-        fun action(item: OccurrenceEntity, action: ReminderAction) { mutate {
+        fun performAction(item: OccurrenceEntity, action: ReminderAction) { mutate {
             val outcome = graph.repository.performAction(item.id, item.round, action)
             report(when (outcome) {
                 ActionOutcome.APPLIED -> when (action) { ReminderAction.TAKE -> "已记录服用"; ReminderAction.SNOOZE -> "10 分钟后再次提醒"; ReminderAction.SKIP -> "已跳过本次" }
@@ -84,8 +87,20 @@ fun MedicationApp(graph: AppGraph, openTodayRequest: Int = 0) {
                 ActionOutcome.NOT_AVAILABLE -> "当前事项不可操作，请查看最新状态"
             })
         } }
-        BackHandler(enabled = medicationEditor != null || ocrMode || selectedCase != null) {
-            when { medicationEditor != null -> medicationEditor = null; ocrMode -> ocrMode = false; else -> caseId = null }
+        fun action(item: OccurrenceEntity, action: ReminderAction) {
+            if (action != ReminderAction.SNOOZE) confirmation = item to action
+            else performAction(item, action)
+        }
+        fun back() {
+            when {
+                medicationEditor != null -> medicationEditor = null
+                ocrMode -> ocrMode = false
+                historyCaseId != null -> historyCaseId = null
+                else -> caseId = null
+            }
+        }
+        BackHandler(enabled = medicationEditor != null || ocrMode || selectedCase != null || historyCaseId != null) {
+            back()
         }
         if (medicationEditor != null) {
             val request = medicationEditor!!
@@ -95,64 +110,111 @@ fun MedicationApp(graph: AppGraph, openTodayRequest: Int = 0) {
             } }
         } else {
             Scaffold(
-                topBar = { TopAppBar(title = {
-                    Column { Text(if (ocrMode) "识别药单" else selectedCase?.title ?: listOf("今日用药", "用药事项", "服药历史", "设置")[tab]); if (selectedCase == null && !ocrMode) Text("用药记 · 本机保存", style = MaterialTheme.typography.labelSmall) }
-                }, navigationIcon = {
-                    if (selectedCase != null || ocrMode) IconButton(onClick = { if (ocrMode) ocrMode = false else caseId = null }) { Icon(Icons.Outlined.ArrowBack, "返回") }
-                }, actions = {
-                    if (selectedCase != null && !ocrMode) IconButton(onClick = { caseEditor = selectedCase }) { Icon(Icons.Outlined.Edit, "编辑事项") }
-                }) },
+                topBar = {
+                    val home = tab == 0 && selectedCase == null && historyCaseId == null && !ocrMode
+                    FocusPageHeader(
+                        title = if (ocrMode) "识别药单" else if (historyCaseId != null) "服药记录" else selectedCase?.title ?: listOf("今日用药", "我的药单", "服药记录", "设置")[tab],
+                        home = home,
+                        onBack = if (selectedCase != null || ocrMode || historyCaseId != null) (::back) else null,
+                        onEdit = if (selectedCase != null && !ocrMode && historyCaseId == null) ({ caseEditor = selectedCase }) else null,
+                        onHistory = { historyCaseId = null; tab = 2 },
+                    )
+                },
                 snackbarHost = { SnackbarHost(snackbar) },
                 bottomBar = {
-                    if (selectedCase == null && !ocrMode) NavigationBar {
-                        val icons = listOf(Icons.Outlined.Today, Icons.Outlined.Medication, Icons.Outlined.History, Icons.Outlined.Settings)
-                        listOf("今日", "事项", "历史", "设置").forEachIndexed { index, label ->
-                            NavigationBarItem(tab == index, { tab = index }, icon = { Icon(icons[index], label) }, label = { Text(label) })
-                        }
-                    }
+                    if (selectedCase == null && historyCaseId == null && !ocrMode) SeniorNavigation(tab) { tab = it }
                 },
-                floatingActionButton = { if (!ocrMode && selectedCase == null && tab == 1) FloatingActionButton(onClick = { caseEditor = CaseEntity() }) { Icon(Icons.Outlined.Add, "新建用药事项") } }
+                floatingActionButton = { if (!seniorMode.value && !ocrMode && selectedCase == null && historyCaseId == null && tab == 1) FloatingActionButton(onClick = { caseEditor = CaseEntity() }) { Icon(Icons.Outlined.Add, "新建用药事项") } }
             ) { padding ->
                 Box(Modifier.padding(padding).fillMaxSize()) {
                     when {
+                        selectedHistory != null -> key(selectedHistory.caseId) {
+                            HistoryScreen(selectedHistory, intakes, now) { recordDetails = it }
+                        }
                         ocrMode && selectedCase != null -> OcrImportScreen(graph, selectedCase, ocrImages, { ocrImages = it; drafts = emptyList() }, drafts, { drafts = it }, { draft, index -> medicationEditor = EditMedicationRequest(selectedCase.id, draft = draft, draftIndex = index, prescriptionImage = ocrImages.firstOrNull()) }, { item -> mutate { graph.repository.saveCase(item) } })
                         selectedCase != null -> CaseDetail(graph, selectedCase, meds.filter { it.caseId == selectedCase.id }, schedules,
                             onNewMedication = { medicationEditor = EditMedicationRequest(selectedCase.id) },
                             onEditMedication = { medicationEditor = EditMedicationRequest(selectedCase.id, medication = it) },
                             onOcr = { ocrImages = emptyList(); drafts = emptyList(); ocrMode = true },
+                            onHistory = { historyCaseId = selectedCase.id },
                             onStatus = { status -> mutate { graph.repository.setCaseStatus(selectedCase.id, status) } },
                             onMedicationActive = { medication, active -> mutate { graph.repository.setMedicationActive(medication.id, active) } })
-                        tab == 0 -> TodayScreen(graph, occurrences, now, ::action, { recordEditor = it }, onAdd = { tab = 1; caseEditor = CaseEntity() })
+                        tab == 0 -> FocusTodayScreen(graph, todayReminderGroups(occurrences, LocalDate.now().toString(), now), now, ::action, { recordDetails = it }, onAdd = { tab = 1; caseEditor = CaseEntity() }, dailyDoseCounts = schedules.filter { it.enabled }.groupingBy { it.medicationId }.eachCount())
                         tab == 1 -> CaseList(cases, meds, { caseId = it.id }, { caseEditor = CaseEntity() })
-                        tab == 2 -> HistoryScreen(graph, cases, occurrences, intakes, now, ::action, { recordEditor = it })
-                        else -> SettingsScreen(graph, ::report)
+                        tab == 2 -> HistoryCaseList(historyGroups) { historyCaseId = it.caseId }
+                        else -> SettingsScreen(graph, seniorMode.value, { seniorMode.value = it }, ::report)
                     }
                 }
             }
         }
         caseEditor?.let { initial -> key(initial.id) { CaseEditor(graph, initial, { caseEditor = null }) { saved -> caseEditor = null; caseId = saved.id; tab = 1; report("用药事项已保存") } } }
-        recordEditor?.let { selected ->
+        recordDetails?.let { selected ->
             val latest = occurrences.find { it.id == selected.id } ?: selected
-            RecordDialog(graph, latest, intakes.find { it.occurrenceId == selected.id }, now, { recordEditor = null }, { recordEditor = null; report("记录已更新") })
+            RecordDialog(latest, intakes.find { it.occurrenceId == selected.id }, now) { recordDetails = null }
+        }
+        confirmation?.let { (selected, requestedAction) ->
+            val latest = occurrences.find { it.id == selected.id }
+            val available = latest != null && latest.round == selected.round && effectiveStatus(latest, now) == OccurrenceStatus.PENDING
+            val taking = requestedAction == ReminderAction.TAKE
+            AlertDialog(onDismissRequest = { confirmation = null }, title = { Text(if (taking) "确认已经服用？" else "确认跳过本次？") }, text = {
+                Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text(selected.medicineName, style = MaterialTheme.typography.titleLarge)
+                    Text("本次：${selected.quantity} ${selected.quantityUnit}", style = MaterialTheme.typography.titleLarge)
+                    Text(if (taking) "实际服用后再确认，会记录本次服药。" else "只跳过这一次，之后的提醒照常进行。")
+                    if (!available) Text("本轮提醒已结束或已更新，请返回查看最新状态。", color = MaterialTheme.colorScheme.error)
+                }
+            }, confirmButton = {
+                Button(enabled = available, onClick = { confirmation = null; performAction(selected, requestedAction) }) { Text(if (taking) "确认已服用" else "确认跳过") }
+            }, dismissButton = { TextButton(onClick = { confirmation = null }) { Text("返回") } })
         }
     }
 }
 
 @Composable
-private fun TodayScreen(graph: AppGraph, items: List<OccurrenceEntity>, now: Long, onAction: (OccurrenceEntity, ReminderAction) -> Unit, onRecord: (OccurrenceEntity) -> Unit, onAdd: () -> Unit) {
+private fun TodayScreen(graph: AppGraph, items: List<OccurrenceEntity>, schedules: List<ScheduleEntity>, now: Long, onAction: (OccurrenceEntity, ReminderAction) -> Unit, onRecord: (OccurrenceEntity) -> Unit, onAdd: () -> Unit, onEnableSenior: () -> Unit) {
     val today = LocalDate.now().toString()
-    val visible = items.filter { it.date == today || (it.status in listOf(OccurrenceStatus.PENDING, OccurrenceStatus.SNOOZED) && now < it.deadlineAt) }.sortedBy { it.roundAt }
+    val groups = todayReminderGroups(items, today, now)
+    val dailyDoseCounts = remember(schedules) {
+        schedules.filter { it.enabled }.groupingBy { it.medicationId }.eachCount()
+    }
+    if (LocalSeniorMode.current) {
+        SeniorTodayScreen(graph, groups, dailyDoseCounts, now, onAction, onRecord, onAdd)
+        return
+    }
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item {
             Text(today, style = MaterialTheme.typography.titleMedium)
+            OutlinedButton(onClick = onEnableSenior, modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) { Text("切换老年版 · 大字大按钮") }
             Text("每轮提醒有 30 分钟可处理，超时自动跳过。", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(top = 8.dp))
         }
-        if (visible.isEmpty()) item {
+        if (groups.isEmpty()) item {
             EmptyMessage("今天暂无用药安排", "添加事项，再为每种药设置提醒时刻。")
             Button(onClick = onAdd, modifier = Modifier.fillMaxWidth()) { Text("创建用药事项") }
         }
-        items(visible, key = { it.id }) { item -> OccurrenceCard(graph, item, now, onAction, onRecord) }
+        items(groups, key = { it.key }) { group -> ReminderGroupCard(graph, group, dailyDoseCounts, now, onAction, onRecord) }
         item { Spacer(Modifier.height(20.dp)) }
+    }
+}
+
+@Composable
+internal fun ReminderGroupCard(graph: AppGraph, group: TodayReminderGroup, dailyDoseCounts: Map<String, Int>, now: Long, onAction: (OccurrenceEntity, ReminderAction) -> Unit, onRecord: (OccurrenceEntity) -> Unit) {
+    ElevatedCard(Modifier.fillMaxWidth()) {
+        Surface(color = MaterialTheme.colorScheme.primaryContainer) {
+            if (LocalSeniorMode.current) Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(localTime(group.roundAt), style = MaterialTheme.typography.headlineMedium)
+                Text("${group.medicines.size} 项用药", style = MaterialTheme.typography.bodySmall)
+            } else Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Icon(Icons.Outlined.Schedule, null, tint = MaterialTheme.colorScheme.onPrimaryContainer)
+                Text(localTime(group.roundAt), Modifier.weight(1f), style = MaterialTheme.typography.headlineSmall, color = MaterialTheme.colorScheme.onPrimaryContainer)
+                Text("${group.medicines.size} 项用药", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onPrimaryContainer)
+            }
+        }
+        group.medicines.forEachIndexed { index, medicine ->
+            key(medicine.id) {
+                if (index > 0) HorizontalDivider(Modifier.padding(horizontal = 16.dp))
+                OccurrenceContent(graph, medicine, now, onAction, onRecord, showTime = false, dailyDoseCount = dailyDoseCounts[medicine.medicationId])
+            }
+        }
     }
 }
 
@@ -177,49 +239,64 @@ internal fun statusText(item: OccurrenceEntity, now: Long): String = when (effec
 
 @Composable
 internal fun OccurrenceCard(graph: AppGraph, item: OccurrenceEntity, now: Long, onAction: (OccurrenceEntity, ReminderAction) -> Unit, onRecord: (OccurrenceEntity) -> Unit, intake: IntakeEntity? = null) {
-    val status = effectiveStatus(item, now)
     ElevatedCard(Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                item.imagePath?.let { AsyncImage(graph.images.file(it), "${item.medicineName}图片", Modifier.size(56.dp), contentScale = ContentScale.Crop) }
-                Column(Modifier.weight(1f)) {
-                    Text("${localTime(item.roundAt)}  ${item.medicineName}", style = MaterialTheme.typography.titleMedium)
-                    Text(item.caseTitle, style = MaterialTheme.typography.bodySmall)
+        OccurrenceContent(graph, item, now, onAction, onRecord, intake = intake)
+    }
+}
+
+@Composable
+private fun OccurrenceContent(graph: AppGraph, item: OccurrenceEntity, now: Long, onAction: (OccurrenceEntity, ReminderAction) -> Unit, onRecord: (OccurrenceEntity) -> Unit, intake: IntakeEntity? = null, showTime: Boolean = true, dailyDoseCount: Int? = null) {
+    val status = effectiveStatus(item, now)
+    val senior = LocalSeniorMode.current
+    Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            item.imagePath?.let { AsyncImage(graph.images.file(it), "${item.medicineName}图片", Modifier.size(if (senior) 80.dp else 56.dp), contentScale = ContentScale.Crop) }
+            Column(Modifier.weight(1f)) {
+                Text(if (showTime) "${localTime(item.roundAt)}  ${item.medicineName}" else item.medicineName, style = MaterialTheme.typography.titleMedium)
+                Text(item.caseTitle, style = MaterialTheme.typography.bodySmall)
+            }
+        }
+        if (dailyDoseCount != null && dailyDoseCount > 0) {
+            Text("每日 $dailyDoseCount 次", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+        }
+        Text("每次数量：${item.quantity} ${item.quantityUnit}", style = if (senior) MaterialTheme.typography.headlineSmall else MaterialTheme.typography.bodyLarge)
+        if (item.doseValue.isNotBlank()) Text("总剂量：${item.doseValue} ${item.doseUnit}", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        if (item.mealNote.isNotBlank()) Text(item.mealNote, style = MaterialTheme.typography.bodyMedium)
+        Text(statusText(item, now), color = if (status == OccurrenceStatus.PENDING) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
+        when (status) {
+            OccurrenceStatus.PENDING -> {
+                val seconds = ((item.deadlineAt - now) / 1000).coerceAtLeast(0)
+                Text("${localTime(item.deadlineAt)} 截止 · 剩余 ${seconds / 60}分${seconds % 60}秒", style = MaterialTheme.typography.bodySmall)
+                Button(onClick = { onAction(item, ReminderAction.TAKE) }, modifier = Modifier.fillMaxWidth().heightIn(min = if (senior) 64.dp else 40.dp)) { Text(if (senior) "我已服用" else "已服用") }
+                if (senior) Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(onClick = { onAction(item, ReminderAction.SNOOZE) }, modifier = Modifier.fillMaxWidth().heightIn(min = 60.dp)) { Text("10 分钟后提醒我") }
+                    OutlinedButton(onClick = { onAction(item, ReminderAction.SKIP) }, modifier = Modifier.fillMaxWidth().heightIn(min = 60.dp)) { Text("跳过这一次") }
+                } else Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(onClick = { onAction(item, ReminderAction.SNOOZE) }, modifier = Modifier.weight(1f)) { Text("稍后提醒") }
+                    OutlinedButton(onClick = { onAction(item, ReminderAction.SKIP) }, modifier = Modifier.weight(1f)) { Text("跳过本次") }
                 }
             }
-            Text("每次 ${item.quantity} ${item.quantityUnit}" + if (item.doseValue.isBlank()) "" else " · ${item.doseValue}${item.doseUnit}", style = MaterialTheme.typography.bodyLarge)
-            if (item.mealNote.isNotBlank()) Text(item.mealNote, style = MaterialTheme.typography.bodyMedium)
-            Text(statusText(item, now), color = if (status == OccurrenceStatus.PENDING) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
-            when (status) {
-                OccurrenceStatus.PENDING -> {
-                    val seconds = ((item.deadlineAt - now) / 1000).coerceAtLeast(0)
-                    Text("${localTime(item.deadlineAt)} 截止 · 剩余 ${seconds / 60}分${seconds % 60}秒", style = MaterialTheme.typography.bodySmall)
-                    Button(onClick = { onAction(item, ReminderAction.TAKE) }, modifier = Modifier.fillMaxWidth()) { Text("已服用") }
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedButton(onClick = { onAction(item, ReminderAction.SNOOZE) }, modifier = Modifier.weight(1f)) { Text("稍后提醒") }
-                        OutlinedButton(onClick = { onAction(item, ReminderAction.SKIP) }, modifier = Modifier.weight(1f)) { Text("跳过本次") }
-                    }
-                }
-                OccurrenceStatus.SNOOZED -> Text("下次提醒：${fullTime(item.roundAt)}；届时重新开放操作。", style = MaterialTheme.typography.bodySmall)
-                OccurrenceStatus.SCHEDULED -> Text("提醒后可操作，${localTime(item.deadlineAt)} 截止。", style = MaterialTheme.typography.bodySmall)
-                OccurrenceStatus.TAKEN -> {
-                    if (intake != null) Text("实际：${fullTime(intake.actualAt)} · ${intake.quantity}${intake.quantityUnit}", style = MaterialTheme.typography.bodySmall)
-                    TextButton(onClick = { onRecord(item) }) { Text("查看／更正实际记录") }
-                }
-                OccurrenceStatus.SKIPPED -> {
-                    if (item.notes.isNotBlank()) Text(item.notes, style = MaterialTheme.typography.bodySmall)
-                    TextButton(onClick = { onRecord(item) }) { Text("查看／补充备注") }
-                }
+            OccurrenceStatus.SNOOZED -> Text("下次提醒：${fullTime(item.roundAt)}；届时重新开放操作。", style = MaterialTheme.typography.bodySmall)
+            OccurrenceStatus.SCHEDULED -> Text("提醒后可操作，${localTime(item.deadlineAt)} 截止。", style = MaterialTheme.typography.bodySmall)
+            OccurrenceStatus.TAKEN -> {
+                if (intake != null) Text("实际：${fullTime(intake.actualAt)} · ${intake.quantity}${intake.quantityUnit}", style = MaterialTheme.typography.bodySmall)
+                TextButton(onClick = { onRecord(item) }) { Text("查看记录详情") }
+            }
+            OccurrenceStatus.SKIPPED -> {
+                if (item.notes.isNotBlank()) Text(item.notes, style = MaterialTheme.typography.bodySmall)
+                TextButton(onClick = { onRecord(item) }) { Text("查看记录详情") }
             }
         }
     }
 }
 
-private fun planLabel(status: PlanStatus) = when (status) { PlanStatus.ACTIVE -> "执行中"; PlanStatus.PAUSED -> "已暂停"; PlanStatus.ENDED -> "已结束"; PlanStatus.ARCHIVED -> "已归档" }
+internal fun planLabel(status: PlanStatus) = when (status) { PlanStatus.ACTIVE -> "执行中"; PlanStatus.PAUSED -> "已暂停"; PlanStatus.ENDED -> "已结束"; PlanStatus.ARCHIVED -> "已归档" }
 
 @Composable
 private fun CaseList(cases: List<CaseEntity>, meds: List<MedicationEntity>, select: (CaseEntity) -> Unit, add: () -> Unit) {
+    val senior = LocalSeniorMode.current
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        if (senior && cases.isNotEmpty()) item { Button(onClick = add, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Outlined.Add, null); Spacer(Modifier.width(8.dp)); Text("添加用药事项") } }
         if (cases.isEmpty()) item { EmptyMessage("建立自己的用药清单", "一个事项可管理多种药品及各自的提醒。") ; Button(onClick = add, modifier = Modifier.fillMaxWidth()) { Text("新建事项") } }
         items(cases.sortedByDescending { it.createdAt }, key = { it.id }) { item ->
             ElevatedCard(onClick = { select(item) }, modifier = Modifier.fillMaxWidth()) {
@@ -234,16 +311,23 @@ private fun CaseList(cases: List<CaseEntity>, meds: List<MedicationEntity>, sele
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun CaseDetail(graph: AppGraph, item: CaseEntity, meds: List<MedicationEntity>, schedules: List<ScheduleEntity>, onNewMedication: () -> Unit, onEditMedication: (MedicationEntity) -> Unit, onOcr: () -> Unit, onStatus: (PlanStatus) -> Unit, onMedicationActive: (MedicationEntity, Boolean) -> Unit) {
+private fun CaseDetail(graph: AppGraph, item: CaseEntity, meds: List<MedicationEntity>, schedules: List<ScheduleEntity>, onNewMedication: () -> Unit, onEditMedication: (MedicationEntity) -> Unit, onOcr: () -> Unit, onHistory: () -> Unit, onStatus: (PlanStatus) -> Unit, onMedicationActive: (MedicationEntity, Boolean) -> Unit) {
     var confirmStatus by remember { mutableStateOf<PlanStatus?>(null) }
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item {
+            if (LocalSeniorMode.current) Text(item.title, style = MaterialTheme.typography.titleLarge)
             Text("${planLabel(item.status)} · ${meds.size} 种药品", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+            OutlinedButton(onClick = onHistory, modifier = Modifier.fillMaxWidth().padding(top = 12.dp)) {
+                Icon(Icons.Outlined.History, null)
+                Spacer(Modifier.width(8.dp))
+                Text("查看服药记录")
+            }
             Text(item.cause.ifBlank { "尚未填写病因／用药原因" }, Modifier.padding(top = 12.dp), style = MaterialTheme.typography.titleMedium)
             if (item.notes.isNotBlank()) Text(item.notes, Modifier.padding(top = 8.dp))
             item.prescriptionImages.forEach { image -> AsyncImage(graph.images.file(image), "药单原图", Modifier.fillMaxWidth().heightIn(max = 220.dp).padding(top = 12.dp), contentScale = ContentScale.Fit) }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 12.dp)) {
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 12.dp)) {
                 OutlinedButton(onClick = { confirmStatus = if (item.status == PlanStatus.ACTIVE) PlanStatus.PAUSED else PlanStatus.ACTIVE }) { Text(if (item.status == PlanStatus.ACTIVE) "暂停" else "恢复执行") }
                 if (item.status != PlanStatus.ENDED) TextButton(onClick = { confirmStatus = PlanStatus.ENDED }) { Text("结束") }
                 if (item.status != PlanStatus.ARCHIVED) TextButton(onClick = { confirmStatus = PlanStatus.ARCHIVED }) { Text("归档") }
@@ -251,6 +335,7 @@ private fun CaseDetail(graph: AppGraph, item: CaseEntity, meds: List<MedicationE
             HorizontalDivider(Modifier.padding(vertical = 16.dp))
             Button(onClick = onNewMedication, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Outlined.Add, null); Text("手动添加药品") }
             OutlinedButton(onClick = onOcr, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Outlined.DocumentScanner, null); Spacer(Modifier.width(8.dp)); Text("拍照／相册识别药单") }
+            Text("多种药品设为同一提醒时刻，今日页会自动合并展示；每种药品单独记录。", Modifier.padding(top = 8.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         if (meds.isEmpty()) item { EmptyMessage("还没有药品", "添加药品后设置每次用量与提醒时刻。") }
         items(meds, key = { it.id }) { medicine ->
@@ -259,11 +344,17 @@ private fun CaseDetail(graph: AppGraph, item: CaseEntity, meds: List<MedicationE
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         medicine.imagePaths.firstOrNull()?.let { AsyncImage(graph.images.file(it), "${medicine.name}图片", Modifier.size(56.dp).padding(end = 8.dp), contentScale = ContentScale.Crop) }
                         Text(medicine.name, Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
-                        Switch(medicine.active, { onMedicationActive(medicine, it) })
+                        if (!LocalSeniorMode.current) Switch(medicine.active, { onMedicationActive(medicine, it) }, modifier = Modifier.semantics { contentDescription = "${medicine.name}提醒" })
+                    }
+                    if (LocalSeniorMode.current) Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Text(if (medicine.active) "药品提醒已开启" else "药品提醒已暂停", Modifier.weight(1f))
+                        Switch(medicine.active, { onMedicationActive(medicine, it) }, modifier = Modifier.semantics { contentDescription = "${medicine.name}提醒" })
                     }
                     if (medicine.specification.isNotBlank()) Text(medicine.specification)
                     Text("${medicine.startDate} 至 ${medicine.endDate ?: "持续执行"} · ${medicine.mealNote}", style = MaterialTheme.typography.bodySmall)
-                    schedules.filter { it.medicationId == medicine.id && it.enabled }.sortedBy { it.time }.forEach { schedule -> Text("${schedule.time} · ${schedule.quantity}${medicine.quantityUnit}" + if (schedule.doseValue.isBlank()) "" else " · ${schedule.doseValue}${schedule.doseUnit}") }
+                    schedules.filter { it.medicationId == medicine.id && it.enabled }.sortedBy { it.time }.forEach { schedule ->
+                        Text("${schedule.time} · 每次数量：${schedule.quantity} ${medicine.quantityUnit}" + if (schedule.doseValue.isBlank()) "" else "\n总剂量：${schedule.doseValue} ${schedule.doseUnit}")
+                    }
                     if (medicine.notes.isNotBlank()) Text(medicine.notes, style = MaterialTheme.typography.bodySmall)
                     TextButton(onClick = { onEditMedication(medicine) }) { Text("编辑药品与安排") }
                 }

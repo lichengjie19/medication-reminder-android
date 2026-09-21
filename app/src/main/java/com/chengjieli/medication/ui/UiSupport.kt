@@ -22,6 +22,8 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.unit.dp
@@ -34,6 +36,7 @@ import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.ZoneId
+import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
 
 internal val timeFormat: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm")
@@ -45,9 +48,33 @@ internal fun parseFullTime(value: String): Long = LocalDateTime.parse(value, ful
 
 @Composable
 internal fun Input(label: String, value: String, change: (String) -> Unit, modifier: Modifier = Modifier, numeric: Boolean = false, singleLine: Boolean = true, enabled: Boolean = true, supporting: String? = null) {
-    OutlinedTextField(value, change, modifier.fillMaxWidth(), enabled = enabled, label = { Text(label) }, singleLine = singleLine,
-        keyboardOptions = KeyboardOptions(keyboardType = if (numeric) KeyboardType.Decimal else KeyboardType.Text),
-        supportingText = supporting?.let { { Text(it) } })
+    if (LocalSeniorMode.current) {
+        Column(modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text(label, style = MaterialTheme.typography.labelLarge)
+            OutlinedTextField(value, change, Modifier.fillMaxWidth().semantics { contentDescription = label }, enabled = enabled, singleLine = singleLine,
+                keyboardOptions = KeyboardOptions(keyboardType = if (numeric) KeyboardType.Decimal else KeyboardType.Text),
+                supportingText = supporting?.let { { Text(it) } })
+        }
+    } else {
+        OutlinedTextField(value, change, modifier.fillMaxWidth(), enabled = enabled, label = { Text(label) }, singleLine = singleLine,
+            keyboardOptions = KeyboardOptions(keyboardType = if (numeric) KeyboardType.Decimal else KeyboardType.Text),
+            supportingText = supporting?.let { { Text(it) } })
+    }
+}
+
+@Composable
+internal fun ValueWithUnit(valueField: @Composable (Modifier) -> Unit, unitField: @Composable (Modifier) -> Unit) {
+    if (LocalSeniorMode.current) {
+        Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            valueField(Modifier.fillMaxWidth())
+            unitField(Modifier.fillMaxWidth())
+        }
+    } else {
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            valueField(Modifier.weight(1f))
+            unitField(Modifier.width(112.dp))
+        }
+    }
 }
 
 @Composable
@@ -62,13 +89,75 @@ internal fun EmptyMessage(title: String, detail: String) {
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun DateField(label: String, value: String, change: (String) -> Unit, optional: Boolean = false) {
-    Input(label, value, change, supporting = if (optional) "格式 YYYY-MM-DD；留空表示持续执行" else "格式 YYYY-MM-DD，例如 ${LocalDate.now()}")
+    val seniorMode = LocalSeniorMode.current
+    var pickerOpen by rememberSaveable { mutableStateOf(false) }
+    val selectedDate = remember(value) { runCatching { LocalDate.parse(value) }.getOrNull() }
+    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text(label, style = MaterialTheme.typography.labelLarge)
+        OutlinedButton(
+            onClick = { pickerOpen = true },
+            modifier = Modifier.fillMaxWidth().heightIn(min = if (seniorMode) 60.dp else 52.dp),
+        ) {
+            Icon(Icons.Outlined.CalendarMonth, null)
+            Spacer(Modifier.width(12.dp))
+            Text(
+                selectedDate?.format(DateTimeFormatter.ofPattern("yyyy年M月d日"))
+                    ?: if (optional && value.isBlank()) "持续执行 · 选择结束日期" else "选择日期",
+                Modifier.weight(1f),
+                style = MaterialTheme.typography.bodyLarge,
+            )
+            Icon(Icons.Outlined.ExpandMore, null)
+        }
+        if (optional && value.isNotBlank()) {
+            TextButton(
+                onClick = { change("") },
+                modifier = if (seniorMode) Modifier.fillMaxWidth() else Modifier,
+            ) { Text("清空日期，持续执行") }
+        }
+    }
+    if (pickerOpen) {
+        // DatePicker represents calendar days at UTC midnight, not device-local midnight.
+        val initialDate = selectedDate?.takeIf { it.year in 1900..2100 } ?: LocalDate.now()
+        val pickerState = rememberDatePickerState(
+            initialSelectedDateMillis = initialDate.atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli(),
+        )
+        DatePickerDialog(
+            onDismissRequest = { pickerOpen = false },
+            confirmButton = {
+                TextButton(enabled = pickerState.selectedDateMillis != null, onClick = {
+                    pickerState.selectedDateMillis?.let { millis ->
+                        change(Instant.ofEpochMilli(millis).atZone(ZoneOffset.UTC).toLocalDate().toString())
+                    }
+                    pickerOpen = false
+                }) { Text("确定") }
+            },
+            dismissButton = { TextButton(onClick = { pickerOpen = false }) { Text("取消") } },
+        ) {
+            DatePicker(
+                state = pickerState,
+                showModeToggle = false,
+                title = { Text(label, Modifier.padding(start = 24.dp, end = 24.dp, top = 16.dp), style = MaterialTheme.typography.labelLarge) },
+                headline = {
+                    val displayedDate = pickerState.selectedDateMillis?.let {
+                        Instant.ofEpochMilli(it).atZone(ZoneOffset.UTC).toLocalDate()
+                    }
+                    Text(
+                        displayedDate?.format(DateTimeFormatter.ofPattern("yyyy年M月d日")) ?: "选择日期",
+                        Modifier.padding(horizontal = 24.dp, vertical = 12.dp),
+                        style = MaterialTheme.typography.titleLarge,
+                    )
+                },
+            )
+        }
+    }
 }
 
 @Composable
 internal fun ImageAttachments(graph: AppGraph, title: String, paths: List<String>, onChange: (List<String>) -> Unit, single: Boolean = false) {
+    val seniorMode = LocalSeniorMode.current
     val scope = rememberCoroutineScope()
     var error by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
@@ -92,21 +181,38 @@ internal fun ImageAttachments(graph: AppGraph, title: String, paths: List<String
         Text(title, style = MaterialTheme.typography.titleMedium)
         paths.forEachIndexed { index, path ->
             ElevatedCard(Modifier.fillMaxWidth()) {
-                Row(Modifier.padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                    AsyncImage(graph.images.file(path), "$title ${index + 1}", Modifier.size(76.dp).clickable { editPath = path }, contentScale = ContentScale.Crop)
-                    Text(if (index == 0) "封面图片" else "图片 ${index + 1}", Modifier.weight(1f).padding(horizontal = 12.dp))
-                    IconButton(onClick = { editPath = path }, enabled = !busy) { Icon(Icons.Outlined.Crop, "旋转或裁剪图片") }
-                    IconButton(onClick = { onChange(paths.filterIndexed { i, _ -> i != index }) }, enabled = !busy) { Icon(Icons.Outlined.Close, "移除此图片") }
+                if (seniorMode) {
+                    Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                            AsyncImage(graph.images.file(path), "$title ${index + 1}", Modifier.size(88.dp).clickable(enabled = !busy) { editPath = path }, contentScale = ContentScale.Crop)
+                            Text(if (index == 0) "封面图片" else "图片 ${index + 1}", Modifier.weight(1f))
+                        }
+                        OutlinedButton(onClick = { editPath = path }, enabled = !busy, modifier = Modifier.fillMaxWidth()) {
+                            Icon(Icons.Outlined.Crop, null); Spacer(Modifier.width(8.dp)); Text("旋转或裁剪")
+                        }
+                        TextButton(onClick = { onChange(paths.filterIndexed { i, _ -> i != index }) }, enabled = !busy, modifier = Modifier.fillMaxWidth()) {
+                            Icon(Icons.Outlined.Close, null); Spacer(Modifier.width(8.dp)); Text("移除图片")
+                        }
+                    }
+                } else {
+                    Row(Modifier.padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        AsyncImage(graph.images.file(path), "$title ${index + 1}", Modifier.size(76.dp).clickable { editPath = path }, contentScale = ContentScale.Crop)
+                        Text(if (index == 0) "封面图片" else "图片 ${index + 1}", Modifier.weight(1f).padding(horizontal = 12.dp))
+                        IconButton(onClick = { editPath = path }, enabled = !busy) { Icon(Icons.Outlined.Crop, "旋转或裁剪图片") }
+                        IconButton(onClick = { onChange(paths.filterIndexed { i, _ -> i != index }) }, enabled = !busy) { Icon(Icons.Outlined.Close, "移除此图片") }
+                    }
                 }
             }
         }
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedButton(onClick = { gallery.launch("image/*") }, enabled = !busy) { Icon(Icons.Outlined.PhotoLibrary, null); Spacer(Modifier.width(6.dp)); Text("相册") }
+        val imageActions: @Composable () -> Unit = {
+            OutlinedButton(onClick = { gallery.launch("image/*") }, enabled = !busy, modifier = if (seniorMode) Modifier.fillMaxWidth() else Modifier) { Icon(Icons.Outlined.PhotoLibrary, null); Spacer(Modifier.width(6.dp)); Text(if (seniorMode) "从相册选择" else "相册") }
             OutlinedButton(onClick = {
                 try { cameraUri = graph.images.createCameraUri(); camera.launch(cameraUri!!) } catch (e: Exception) { error = "无法打开相机：${e.message}" }
-            }, enabled = !busy) { Icon(Icons.Outlined.PhotoCamera, null); Spacer(Modifier.width(6.dp)); Text("拍照") }
+            }, enabled = !busy, modifier = if (seniorMode) Modifier.fillMaxWidth() else Modifier) { Icon(Icons.Outlined.PhotoCamera, null); Spacer(Modifier.width(6.dp)); Text("拍照") }
             if (busy) CircularProgressIndicator(Modifier.size(28.dp))
         }
+        if (seniorMode) Column(verticalArrangement = Arrangement.spacedBy(8.dp)) { imageActions() }
+        else Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { imageActions() }
         ErrorText(error)
     }
     editPath?.let { path -> ImageTransformDialog(graph, path, { editPath = null }) { replacement -> onChange(paths.map { if (it == path) replacement else it }); editPath = null } }

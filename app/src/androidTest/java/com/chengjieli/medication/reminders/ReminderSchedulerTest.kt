@@ -1,6 +1,7 @@
 package com.chengjieli.medication.reminders
 
 import android.app.NotificationManager
+import android.app.Notification
 import android.content.Context
 import android.os.Build
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -29,7 +30,8 @@ class ReminderSchedulerTest {
                 .use { android.os.ParcelFileDescriptor.AutoCloseInputStream(it).readBytes() }
         }
         (context.applicationContext as MedicationApplication).graph.refresh()
-        scheduler = ReminderScheduler(context)
+        // These fixtures deliberately bypass Room; real alarm/service integration is covered in AlarmDeliveryTest.
+        scheduler = ReminderScheduler(context, playback = { true })
         notifications = context.getSystemService(NotificationManager::class.java)
         scheduler.resetDeliveryHistory()
     }
@@ -59,6 +61,23 @@ class ReminderSchedulerTest {
         val item = occurrence(now)
         scheduler.synchronize(BackupSnapshot(occurrences = listOf(item)), now)
         awaitVisible(item.id, true)
+    }
+
+    @Test fun serviceStartRejectionUpgradesExistingSilentNotificationToNormalAlert() {
+        val now = System.currentTimeMillis()
+        val item = occurrence(now)
+        val snapshot = BackupSnapshot(occurrences = listOf(item))
+        scheduler.synchronize(snapshot, now)
+        awaitVisible(item.id, true)
+        val initial = notifications.activeNotifications.first { it.tag == "dose:${item.id}" }.notification
+        assertTrue(initial.flags and Notification.FLAG_ONLY_ALERT_ONCE != 0)
+        ReminderScheduler(context, playback = { false }).synchronize(snapshot, now)
+        val until = android.os.SystemClock.elapsedRealtime() + 3_000
+        while (notifications.activeNotifications.first { it.tag == "dose:${item.id}" }.notification.flags and Notification.FLAG_ONLY_ALERT_ONCE != 0 && android.os.SystemClock.elapsedRealtime() < until) {
+            android.os.SystemClock.sleep(20)
+        }
+        val fallback = notifications.activeNotifications.first { it.tag == "dose:${item.id}" }.notification
+        assertEquals("前台服务被拒时，已有的静默通知也应回退普通提醒", 0, fallback.flags and Notification.FLAG_ONLY_ALERT_ONCE)
     }
 
     @Test fun missingSystemNotificationIsRepostedUnlessUserDismissedThisRound() {

@@ -4,12 +4,16 @@
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.VIBRATE" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <!-- All models are bundled; remove network permissions contributed by SDKs. -->
     <uses-permission android:name="android.permission.INTERNET" tools:node="remove" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" tools:node="remove" />
     <uses-feature android:name="android.hardware.camera" android:required="false" />
     <application android:name=".MedicationApplication" android:label="用药记"
-        android:icon="@drawable/ic_app" android:roundIcon="@drawable/ic_app"
+        android:icon="@mipmap/ic_launcher" android:roundIcon="@mipmap/ic_launcher"
         android:allowBackup="false" android:fullBackupContent="false"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:supportsRtl="true" android:theme="@style/Theme.Medication">
@@ -19,6 +23,14 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <activity android:name=".reminders.ReminderAlarmActivity" android:exported="false"
+            android:excludeFromRecents="true" android:launchMode="singleTop"
+            android:showWhenLocked="true" android:turnScreenOn="true" />
+        <service android:name=".reminders.AlarmPlaybackService" android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="User-scheduled medication alarm: continuous audible or vibration alert until manually stopped, snoozed, handled, or its 30-minute deadline." />
+        </service>
         <provider android:name="androidx.core.content.FileProvider" android:authorities="${applicationId}.files"
             android:exported="false" android:grantUriPermissions="true">
             <meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/file_paths" />
