@@ -2,6 +2,7 @@ package com.chengjieli.medication.ui
 
 import com.chengjieli.medication.data.OccurrenceEntity
 import com.chengjieli.medication.data.OccurrenceStatus
+import com.chengjieli.medication.domain.ReminderReducer
 import org.junit.Assert.*
 import org.junit.Test
 
@@ -47,5 +48,22 @@ class TodayReminderGroupsTest {
         assertEquals(setOf(completedToday, overnight), beforeDeadline.flatMap { it.medicines }.toSet())
         val afterDeadline = todayReminderGroups(listOf(completedToday, overnight, completedYesterday), today, 1_801_000)
         assertEquals(listOf(completedToday), afterDeadline.flatMap { it.medicines })
+    }
+
+    @Test fun nextDayScheduledReminderAppearsExactlyOneHourEarlyWithoutChangingItsAlarmWindow() {
+        val nextDay = first.copy(date = "2026-09-21", roundAt = 4_000_000, deadlineAt = 5_800_000)
+        val earlyAt = nextDay.roundAt - ReminderReducer.CONFIRMATION_LEAD_MILLIS
+        assertTrue(todayReminderGroups(listOf(nextDay), today, earlyAt - 1).isEmpty())
+        assertEquals(nextDay, todayReminderGroups(listOf(nextDay), today, earlyAt).single().medicines.single())
+        assertEquals(nextDay.roundAt, todayReminderGroups(listOf(nextDay), today, earlyAt).single().roundAt)
+        assertEquals(nextDay.deadlineAt, todayReminderGroups(listOf(nextDay), today, earlyAt).single().deadlineAt)
+    }
+
+    @Test fun finishedNextDayOccurrenceIsNotReopenedByTheEarlyDisplayWindow() {
+        val nextDay = first.copy(date = "2026-09-21", roundAt = 4_000_000, deadlineAt = 5_800_000)
+        val now = nextDay.roundAt - ReminderReducer.CONFIRMATION_LEAD_MILLIS
+        listOf(OccurrenceStatus.TAKEN, OccurrenceStatus.SKIPPED).forEach { status ->
+            assertTrue(todayReminderGroups(listOf(nextDay.copy(status = status)), today, now).isEmpty())
+        }
     }
 }

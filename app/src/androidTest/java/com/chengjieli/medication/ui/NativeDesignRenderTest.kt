@@ -67,10 +67,11 @@ class NativeDesignRenderTest {
     fun renderKeyPages() {
         val arguments = InstrumentationRegistry.getArguments()
         val historyOnly = arguments.getString("historyQa") == "true"
+        val adjustmentOnly = arguments.getString("adjustmentQa") == "true"
         assumeTrue(
             "Native design renders run only when explicitly selected",
             arguments.getString("class").orEmpty().contains("NativeDesignRenderTest") ||
-                arguments.getString("designQa") == "true" || historyOnly,
+                arguments.getString("designQa") == "true" || historyOnly || adjustmentOnly,
         )
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         val context = instrumentation.targetContext
@@ -135,6 +136,30 @@ class NativeDesignRenderTest {
                 Log.i("NativeDesignRender", "Rendered ${target.absolutePath}")
             }
 
+            if (adjustmentOnly) {
+                val pending = fixtures.todayOccurrences.first { it.status == OccurrenceStatus.PENDING }
+                val early = pending.copy(status = OccurrenceStatus.SCHEDULED)
+                val earlyNow = early.roundAt - 60 * 60_000L
+                capture("time-adjustment-early") {
+                    RenderRootPage("今日用药", selectedTab = 0) {
+                        FocusTodayScreen(graph, todayReminderGroups(listOf(early), fixtures.date.toString(), earlyNow), earlyNow,
+                            onAction = { _, _ -> }, onRecord = {}, onAdd = {})
+                    }
+                }
+                capture("time-adjustment-today") {
+                    RenderRootPage("今日用药", selectedTab = 0) {
+                        FocusTodayScreen(graph, todayReminderGroups(listOf(pending), fixtures.date.toString(), fixtures.now), fixtures.now,
+                            onAction = { _, _ -> }, onRecord = {}, onAdd = {})
+                    }
+                }
+                capture("time-adjustment-dialog") {
+                    ReminderTimeAdjustmentDialog(pending, fixtures.now, available = true, onDismiss = {}, onConfirm = {})
+                }
+                capture("time-adjustment-dialog-senior", senior = true, fontScale = 1.5f, renderWidthDp = 320) {
+                    ReminderTimeAdjustmentDialog(pending, fixtures.now, available = true, onDismiss = {}, onConfirm = {})
+                }
+                return@use
+            }
             if (!historyOnly) capture("today") {
                 RenderRootPage("今日用药", selectedTab = 0) {
                     FocusTodayScreen(
@@ -238,7 +263,7 @@ class NativeDesignRenderTest {
             put("captures", captures)
         }.toString(2))
         instrumentation.sendStatus(0, Bundle().apply { putString("nativeDesignRenderDirectory", directory.absolutePath) })
-        val expectedCaptures = if (historyOnly) 6 else 13
+        val expectedCaptures = if (adjustmentOnly) 4 else if (historyOnly) 6 else 13
         assertTrue("Expected $expectedCaptures render artifacts", captures.length() == expectedCaptures)
     }
 

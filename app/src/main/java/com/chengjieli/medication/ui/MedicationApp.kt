@@ -25,6 +25,7 @@ import androidx.lifecycle.repeatOnLifecycle
 import coil.compose.AsyncImage
 import com.chengjieli.medication.AppGraph
 import com.chengjieli.medication.data.*
+import com.chengjieli.medication.domain.ReminderReducer
 import com.chengjieli.medication.media.OcrDrugDraft
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -54,6 +55,7 @@ fun MedicationApp(graph: AppGraph, openTodayRequest: Int = 0) {
         var drafts by rememberSaveable(stateSaver = jsonSaver<List<OcrDrugDraft>>()) { mutableStateOf<List<OcrDrugDraft>>(emptyList()) }
         var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
         var confirmation by remember { mutableStateOf<Pair<OccurrenceEntity, ReminderAction>?>(null) }
+        var timeAdjustment by rememberSaveable(stateSaver = jsonSaver<OccurrenceEntity?>()) { mutableStateOf<OccurrenceEntity?>(null) }
         val selectedCase = cases.find { it.id == caseId }
         val historyGroups = remember(cases, occurrences, now) { historyCaseGroups(cases, occurrences, now) }
         val selectedHistory = historyGroups.find { it.caseId == historyCaseId }
@@ -61,6 +63,7 @@ fun MedicationApp(graph: AppGraph, openTodayRequest: Int = 0) {
             if (openTodayRequest > 0) {
                 medicationEditor = null; caseEditor = null; recordDetails = null
                 ocrMode = false; caseId = null; historyCaseId = null; tab = 0; confirmation = null
+                timeAdjustment = null
             }
         }
         LaunchedEffect(graph, lifecycle) {
@@ -139,7 +142,7 @@ fun MedicationApp(graph: AppGraph, openTodayRequest: Int = 0) {
                             onHistory = { historyCaseId = selectedCase.id },
                             onStatus = { status -> mutate { graph.repository.setCaseStatus(selectedCase.id, status) } },
                             onMedicationActive = { medication, active -> mutate { graph.repository.setMedicationActive(medication.id, active) } })
-                        tab == 0 -> FocusTodayScreen(graph, todayReminderGroups(occurrences, LocalDate.now().toString(), now), now, ::action, { recordDetails = it }, onAdd = { tab = 1; caseEditor = CaseEntity() }, dailyDoseCounts = schedules.filter { it.enabled }.groupingBy { it.medicationId }.eachCount())
+                        tab == 0 -> FocusTodayScreen(graph, todayReminderGroups(occurrences, LocalDate.now().toString(), now), now, ::action, { recordDetails = it }, onAdd = { tab = 1; caseEditor = CaseEntity() }, dailyDoseCounts = schedules.filter { it.enabled }.groupingBy { it.medicationId }.eachCount(), onReschedule = { timeAdjustment = it })
                         tab == 1 -> CaseList(cases, meds, { caseId = it.id }, { caseEditor = CaseEntity() })
                         tab == 2 -> HistoryCaseList(historyGroups) { historyCaseId = it.caseId }
                         else -> SettingsScreen(graph, seniorMode.value, { seniorMode.value = it }, ::report)
@@ -151,6 +154,22 @@ fun MedicationApp(graph: AppGraph, openTodayRequest: Int = 0) {
         recordDetails?.let { selected ->
             val latest = occurrences.find { it.id == selected.id } ?: selected
             RecordDialog(latest, intakes.find { it.occurrenceId == selected.id }, now) { recordDetails = null }
+        }
+        timeAdjustment?.let { selected ->
+            val latest = occurrences.find { it.id == selected.id }
+            val available = latest != null && latest.round == selected.round && ReminderReducer.isAwaitingConfirmation(latest, now)
+            ReminderTimeAdjustmentDialog(selected, now, available, onDismiss = { timeAdjustment = null }) { reminderAt ->
+                timeAdjustment = null
+                mutate {
+                    val outcome = graph.repository.rescheduleOccurrence(selected.id, selected.round, reminderAt)
+                    report(when (outcome) {
+                        ActionOutcome.APPLIED -> "本次改为 ${reminderTimeLabel(reminderAt, System.currentTimeMillis())} 提醒，截止时间已同步调整"
+                        ActionOutcome.EXPIRED -> "本次已超时，无法修改时间"
+                        ActionOutcome.STALE -> "提醒已更新，请使用当前提醒"
+                        ActionOutcome.NOT_AVAILABLE -> "当前事项不可操作，请查看最新状态"
+                    })
+                }
+            }
         }
         confirmation?.let { (selected, requestedAction) ->
             val latest = occurrences.find { it.id == selected.id }

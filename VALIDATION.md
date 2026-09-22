@@ -148,3 +148,30 @@ Android 8、目标 Android 16/API36 设备，以及具体手机厂商的后台�
 - 历史专项原生渲染 1 项通过，生成并目视检查 6 张当前截图：分类、分类窄屏大字、列表、详情、1.3 倍字体列表、360dp/1.5 倍字体长药名列表。截图在 `history-update/design-qa/`，来自生产组件合成数据。
 - 实际点击检查使用测试模拟器和合成 ZIP 数据：分类→列表→已服详情→关闭；日期取消保留原筛选、选择无记录日期、清除筛选；已归档药单只展示自身记录、跳过详情可点开；系统返回/顶部返回均逐级返回；无记录药单；药单详情→记录→返回原药单。旧实际数量 1.5 片对应历史剂量 150 mg 显示正确。证据为 `history-update/interaction-*.png` 和 `history-navigation-v1.3.1.log`。
 - 本轮没有重新运行提醒投递测试或连接真实手机；本节只说明记录页面与相关仓储验证，不扩展先前真机提醒验收结论。
+
+## 本次待确认时间调整（2026-09-22）
+
+- 「当前待确认」卡片新增「修改本次时间」入口；选择范围为本轮提醒前后 2 小时，截止同步为选定时间加 30 分钟。新截止已过、原轮已结束或被其他操作更新时拒绝保存。只修改选中事项的当前轮，保留原计划时间、归属日期、每日安排、用量及已有记录。
+- 82 项 JVM 单元测试通过，0 失败；新增 9 项状态转换及 4 项选择器时间解析测试，覆盖边界、旧轮失效、过去时间、跨午夜及夏令时不存在的时刻。
+- API 35 模拟器专项回归 30 项通过，0 失败、0 跳过：仓储 24 项、调度器 5 项、真实定时投递 1 项。包含并发确认/修改、同组其他药保持、未来计划保持、按新截止锁定、跨日及时区重建。
+- 真实定时用例在原提醒已触发后调用生产修改接口，验证旧通知与持续提醒停止，再由系统定时广播投递新轮；旧轮关闭及服用操作不能处理新轮。该用例使用约 6 秒后触发以缩短测试等待；两小时范围由状态与系统闹钟时间校验覆盖，未实际等待两小时。
+- `assembleDebug`、`assembleDebugAndroidTest`、`lintDebug` 通过；Lint 0 错误、32 条建议。日志：`work/build-time-adjustment.log`、`work/validation-time-adjustment.log`、`work/lint-time-adjustment.log`。
+- 专项原生渲染 1 项通过，目视核对今日入口、普通弹窗、老年模式 1.5 倍字体弹窗；3 张合成数据截图在 `work/time-adjustment-qa/`。这是生产组件静态渲染，不代表全部界面点击流程验收。
+- 本地 APK：`work/releases/time-adjustment/medication-reminder-time-adjustment.apk`，仍为 versionName 1.3.1 / versionCode 5。SHA-256：`b94891acc019d8cb3aa85e21101167a7447207e26a1c0d7d59b85a0c13e1c7cb`；v2 签名验证通过，证书与既有安装包一致。模拟器 `install -r` 成功，未发布远程版本。
+- 本轮未连接真实手机，厂商后台、实际声振及锁屏行为仍未作真机验证。
+
+## 提前一小时待确认（2026-09-22）
+
+- 提醒前 1 小时进入今日页「当前待确认」，仅开放修改本次时间；到新设定的提醒时间才触发通知/播放并开放服用、稍后和跳过。提前展示不改变持久化提醒状态或系统闹钟时间，截止仍为提醒后 30 分钟。跨午夜的次日安排也能提前显示。
+- 87 项 JVM 单测通过，0 失败。API 35 模拟器最终 34 项通过：仓储 26、系统调度 6、真实定时投递 1、原生渲染 1。覆盖提前一小时前后 1 毫秒边界、提前修改但不可服用、到新时间开放、到点前无通知/播放及跨日显示。最终日志：`work/validation-early-confirmation-final.log`。
+- 首次模拟器运行有 1 项合成调度测试失败：首次开启准时提醒权限的系统广播触发真实 Room 刷新，清除了测试临时安排。调度测试现临时关闭恢复广播接收器并在 finally 恢复原状态；真实定时集成测试保持接收器启用。修正测试隔离后上述 34 项全部通过，未为此修改生产提醒代码。
+- `assembleDebug`、`assembleDebugAndroidTest` 通过；Lint 0 错误、32 条建议，日志 `work/lint-early-confirmation.log`。提前待确认界面已目视核对，截图 `work/early-confirmation-qa/time-adjustment-early.png` 使用合成数据。
+- APK：`work/releases/early-confirmation/medication-reminder-early-confirmation.apk`，沿用 versionName 1.3.1 / versionCode 5；SHA-256：`9f91ab8eb4539a1b3429ab24aaf1f2f0edffd76587fba861712d16ed61ab47fc`。v2 签名通过且证书沿用旧版，模拟器覆盖安装成功。
+- 提前一小时边界使用可控时间验证，未实际等待一小时；未连接真实手机，未进行厂商后台、实际声振及锁屏验收。
+
+## v1.3.2 发布包（2026-09-22）
+
+- versionName 1.3.2 / versionCode 6。上述提前待确认和本次时间调整代码保持一致，仅提升安装版本并更新下载说明；离线 `assembleDebug` 成功，日志 `work/build-v1.3.2.log`。
+- APK：`work/releases/v1.3.2/medication-reminder-v1.3.2.apk`，65,018,890 字节。SHA-256：`4b7aca7b0260d33f9ca0b3ee3023b96179db4b21a831d0541225f8de4c4a0fa5`，同时提供 `SHA256SUMS`。
+- APK v2 签名校验通过，证书 SHA-256 仍为 `49d9770c7a0078dbbe3cc45cf0cd63da4bdb6bfab06e0defbaee15349e0abaab`；API 35 模拟器从本次 v1.3.1 测试包覆盖安装成功，包管理器确认版本为 1.3.2/6，主页面启动成功。
+- 功能验证沿用本次 87 项 JVM 单测、34 项模拟器测试及 Lint 0 错误的结果；版本打包后未重复运行全部功能回归，未进行真机验收。

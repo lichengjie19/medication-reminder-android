@@ -274,6 +274,47 @@ class AlarmDeliveryTest {
         }
     }
 
+    @Test fun adjustedBusinessReminderStopsOldAlarmAndDeliversAtSelectedTime() = runBlocking {
+        val original = graph.repository.snapshot()
+        try {
+            val fixture = businessFixture(1)
+            val dose = fixture.occurrences.single()
+            val beforeDelivery = graph.lastDoseAlarmDeliveredAt()
+            graph.repository.restoreSnapshot(fixture)
+            graph.refresh()
+            awaitDoseDelivery(dose.roundAt, beforeDelivery, listOf(dose))
+            val oldClose = closeAction()
+
+            val nextAt = System.currentTimeMillis() + ALARM_DELAY_MILLIS
+            assertEquals(ActionOutcome.APPLIED, graph.repository.rescheduleOccurrence(dose.id, dose.round, nextAt))
+            val beforeNextDelivery = graph.lastDoseAlarmDeliveredAt()
+            graph.refresh()
+            awaitCondition("修改时间后应撤下旧轮药品通知并停止持续提醒") {
+                doseNotification(dose.id) == null && alarmNotification() == null
+            }
+            val adjusted = graph.repository.snapshot().occurrences.single { it.id == dose.id }
+            assertEquals(nextAt, adjusted.roundAt)
+            assertEquals(nextAt + ReminderReducer.WINDOW_MILLIS, adjusted.deadlineAt)
+            assertEquals(dose.originalAt, adjusted.originalAt)
+            assertEquals(dose.round + 1, adjusted.round)
+            // No refresh at the selected time: the system must deliver the persisted new round.
+            awaitDoseDelivery(nextAt, beforeNextDelivery, listOf(adjusted))
+            oldClose.send()
+            val ringingUntil = SystemClock.elapsedRealtime() + 800L
+            while (SystemClock.elapsedRealtime() < ringingUntil) {
+                assertPersistentNotification()
+                SystemClock.sleep(50L)
+            }
+            assertEquals(ActionOutcome.STALE, graph.repository.performAction(dose.id, dose.round, ReminderAction.TAKE))
+            assertTrue(graph.repository.snapshot().intakes.isEmpty())
+            graph.closeAlarm(adjusted.id, adjusted.round)
+            awaitCondition("新轮仍可关闭") { alarmNotification() == null }
+        } finally {
+            graph.repository.restoreSnapshot(original)
+            graph.refresh()
+        }
+    }
+
     private fun businessFixture(medicineCount: Int): BackupSnapshot {
         val now = System.currentTimeMillis()
         val at = now + ALARM_DELAY_MILLIS

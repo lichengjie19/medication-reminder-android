@@ -52,6 +52,175 @@ class MedicationRepositoryTest {
         assertEquals(1, results.count { it == ActionOutcome.APPLIED })
         assertEquals(1, db.dao().intakes().size)
     }
+    @Test fun rescheduleOnlyChangesSelectedOccurrenceAndKeepsFuturePlan() = runBlocking {
+        val otherMedication = db.dao().medications().single().copy(id = "otherMedication", name = "另一药品")
+        val otherSchedule = db.dao().schedules().single().copy(id = "otherSchedule", medicationId = otherMedication.id)
+        val otherOccurrence = original.copy(id = "otherOccurrence", scheduleId = otherSchedule.id,
+            medicationId = otherMedication.id, medicineName = otherMedication.name, quantity = "4")
+        db.dao().putMedication(otherMedication)
+        db.dao().putSchedule(otherSchedule)
+        db.dao().putOccurrence(otherOccurrence)
+        repository.reconcile(at)
+        val schedules = db.dao().schedules()
+        val future = db.dao().occurrences().filter { it.status == OccurrenceStatus.SCHEDULED }
+        assertTrue(future.isNotEmpty())
+
+        val selectedAt = at + ReminderReducer.MAX_ADJUSTMENT_MILLIS
+        assertEquals(ActionOutcome.APPLIED, repository.rescheduleOccurrence(original.id, 0, selectedAt, at))
+        assertEquals(original.copy(status = OccurrenceStatus.SNOOZED, round = 1,
+            roundAt = selectedAt, deadlineAt = selectedAt + ReminderReducer.WINDOW_MILLIS), db.dao().occurrence(original.id))
+        assertEquals(otherOccurrence, db.dao().occurrence(otherOccurrence.id))
+        assertEquals(schedules, db.dao().schedules())
+        future.forEach { assertEquals(it, db.dao().occurrence(it.id)) }
+        assertTrue(db.dao().intakes().isEmpty())
+    }
+    @Test fun concurrentConfirmationAndRescheduleApplyOnlyOneAction() = runBlocking {
+        val selectedAt = at + 60 * 60_000
+        val results = listOf(async { repository.performAction(original.id, 0, ReminderAction.TAKE, at) },
+            async { repository.rescheduleOccurrence(original.id, 0, selectedAt, at) }).awaitAll()
+        assertEquals(1, results.count { it == ActionOutcome.APPLIED })
+        val after = db.dao().occurrence(original.id)!!
+        if (after.status == OccurrenceStatus.TAKEN) {
+            assertEquals(listOf(ActionOutcome.APPLIED, ActionOutcome.NOT_AVAILABLE), results)
+            assertEquals(0, after.round)
+            assertEquals(at, after.roundAt)
+            assertEquals(1, db.dao().intakes().size)
+        } else {
+            assertEquals(listOf(ActionOutcome.STALE, ActionOutcome.APPLIED), results)
+            assertEquals(OccurrenceStatus.SNOOZED, after.status)
+            assertEquals(1, after.round)
+            assertEquals(selectedAt, after.roundAt)
+            assertTrue(db.dao().intakes().isEmpty())
+        }
+    }
+    @Test fun concurrentReschedulesRejectTheOldRound() = runBlocking {
+        val firstAt = at + 60 * 60_000
+        val secondAt = at + 90 * 60_000
+        val results = listOf(async { repository.rescheduleOccurrence(original.id, 0, firstAt, at) },
+            async { repository.rescheduleOccurrence(original.id, 0, secondAt, at) }).awaitAll()
+        assertEquals(1, results.count { it == ActionOutcome.APPLIED })
+        assertEquals(1, results.count { it == ActionOutcome.STALE })
+        val after = db.dao().occurrence(original.id)!!
+        assertEquals(1, after.round)
+        assertEquals(if (results[0] == ActionOutcome.APPLIED) firstAt else secondAt, after.roundAt)
+    }
+    @Test fun rescheduleUsesNewDeadlineAndPersistsExpiryLock() = runBlocking {
+        val selectedAt = at + 60 * 60_000
+        assertEquals(ActionOutcome.APPLIED, repository.rescheduleOccurrence(original.id, 0, selectedAt, at))
+        repository.reconcile(original.deadlineAt)
+        assertEquals(OccurrenceStatus.SNOOZED, db.dao().occurrence(original.id)!!.status)
+        repository.reconcile(selectedAt + ReminderReducer.WINDOW_MILLIS - 1)
+        assertEquals(OccurrenceStatus.PENDING, db.dao().occurrence(original.id)!!.status)
+
+        val deadlineAt = selectedAt + ReminderReducer.WINDOW_MILLIS
+        assertEquals(ActionOutcome.EXPIRED, repository.rescheduleOccurrence(original.id, 1, selectedAt + 60_000, deadlineAt))
+        val expired = db.dao().occurrence(original.id)!!
+        assertEquals(SkipReason.TIMEOUT, expired.skipReason)
+        assertEquals(deadlineAt, expired.processedAt)
+        assertEquals(deadlineAt, db.dao().locks().single { it.scheduleId == original.scheduleId && it.date == date }.deadlineAt)
+    }
+    @Test fun invalidRescheduleDoesNotChangeOccurrenceOrRecords() = runBlocking {
+        listOf(at + ReminderReducer.MAX_ADJUSTMENT_MILLIS + 1, at - ReminderReducer.WINDOW_MILLIS).forEach {
+            try {
+                repository.rescheduleOccurrence(original.id, 0, it, at)
+                fail("应拒绝超出范围或截止时间已过的调整")
+            } catch (_: IllegalArgumentException) { }
+            assertEquals(original, db.dao().occurrence(original.id))
+            assertTrue(db.dao().intakes().isEmpty())
+        }
+        assertEquals(ActionOutcome.NOT_AVAILABLE, repository.rescheduleOccurrence("missing", 0, at, at))
+    }
+    @Test fun rescheduleAcrossMidnightPreservesOriginalDateAndNextDayReminder() = runBlocking {
+        val zone = ZoneId.systemDefault()
+        val localDate = LocalDate.parse(date)
+        val nightAt = localDate.atTime(23, 50).atZone(zone).toInstant().toEpochMilli()
+        val night = original.copy(originalAt = nightAt, roundAt = nightAt,
+            deadlineAt = nightAt + ReminderReducer.WINDOW_MILLIS)
+        db.dao().putOccurrence(night)
+        val now = nightAt + 5 * 60_000
+        repository.reconcile(now)
+        val nextDay = db.dao().occurrences().single { it.scheduleId == night.scheduleId && it.date == localDate.plusDays(1).toString() }
+        val selectedAt = nightAt + 60 * 60_000
+
+        assertEquals(ActionOutcome.APPLIED, repository.rescheduleOccurrence(night.id, 0, selectedAt, now))
+        repository.reconcile(selectedAt)
+        val after = db.dao().occurrence(night.id)!!
+        assertEquals(night.date, after.date)
+        assertEquals(night.originalAt, after.originalAt)
+        assertEquals(selectedAt, after.roundAt)
+        assertEquals(selectedAt + ReminderReducer.WINDOW_MILLIS, after.deadlineAt)
+        assertEquals(OccurrenceStatus.PENDING, after.status)
+        assertEquals(nextDay, db.dao().occurrence(nextDay.id))
+    }
+    @Test fun rescheduledRoundSurvivesColdReconcileAndTimezoneChange() = runBlocking {
+        val previousZone = TimeZone.getDefault()
+        try {
+            val selectedAt = at + 60 * 60_000
+            assertEquals(ActionOutcome.APPLIED, repository.rescheduleOccurrence(original.id, 0, selectedAt, at))
+            val changed = db.dao().occurrence(original.id)!!
+            TimeZone.setDefault(TimeZone.getTimeZone(if (previousZone.id == "UTC") "Asia/Shanghai" else "UTC"))
+            repository.reconcile(at + 1000, timeZoneChanged = true)
+            assertEquals(changed, db.dao().occurrence(original.id))
+            repository.reconcile(selectedAt)
+            assertEquals(changed.copy(status = OccurrenceStatus.PENDING), db.dao().occurrence(original.id))
+        } finally { TimeZone.setDefault(previousZone) }
+    }
+    private fun scheduledTomorrowItem(): OccurrenceEntity {
+        val nextDate = LocalDate.parse(date).plusDays(1)
+        val planned = nextDate.atTime(8, 0).atZone(ZoneId.systemDefault()).toInstant().toEpochMilli()
+        return original.copy(date = nextDate.toString(), originalAt = planned, roundAt = planned,
+            deadlineAt = planned + ReminderReducer.WINDOW_MILLIS, status = OccurrenceStatus.SCHEDULED)
+    }
+
+    @Test fun earlyConfirmationRemainsScheduledAndRejectsAllDoseActions() = runBlocking {
+        val scheduled = scheduledTomorrowItem()
+        db.dao().putOccurrence(scheduled)
+        val start = scheduled.roundAt - ReminderReducer.CONFIRMATION_LEAD_MILLIS
+        assertEquals(ActionOutcome.NOT_AVAILABLE,
+            repository.rescheduleOccurrence(scheduled.id, 0, scheduled.roundAt - 30 * 60_000, start - 1))
+        repository.reconcile(start)
+        assertEquals(scheduled, db.dao().occurrence(scheduled.id))
+        assertTrue(ReminderReducer.isAwaitingConfirmation(db.dao().occurrence(scheduled.id)!!, start))
+        listOf(start, scheduled.roundAt - 1).forEach { now ->
+            ReminderAction.entries.forEach {
+                assertEquals(ActionOutcome.NOT_AVAILABLE, repository.performAction(scheduled.id, 0, it, now))
+            }
+            assertEquals(scheduled, db.dao().occurrence(scheduled.id))
+            assertNull(db.dao().intake(scheduled.id))
+        }
+        assertEquals(ActionOutcome.APPLIED, repository.performAction(scheduled.id, 0, ReminderAction.TAKE, scheduled.roundAt))
+        assertEquals(scheduled.roundAt, db.dao().intake(scheduled.id)!!.actualAt)
+    }
+    @Test fun earlyReschedulePersistsNewRoundWithoutChangingOriginalPlan() = runBlocking {
+        val scheduled = scheduledTomorrowItem()
+        db.dao().putOccurrence(scheduled)
+        val start = scheduled.roundAt - ReminderReducer.CONFIRMATION_LEAD_MILLIS
+        repository.reconcile(start)
+        val plans = db.dao().schedules()
+        val future = db.dao().occurrences().filter { it.id != scheduled.id && it.status == OccurrenceStatus.SCHEDULED }
+        assertTrue(future.isNotEmpty())
+        val selectedAt = scheduled.roundAt - 30 * 60_000
+
+        assertEquals(ActionOutcome.APPLIED, repository.rescheduleOccurrence(scheduled.id, 0, selectedAt, start))
+        val changed = scheduled.copy(status = OccurrenceStatus.SNOOZED, round = 1,
+            roundAt = selectedAt, deadlineAt = selectedAt + ReminderReducer.WINDOW_MILLIS)
+        assertEquals(changed, db.dao().occurrence(scheduled.id))
+        assertEquals(ActionOutcome.STALE, repository.rescheduleOccurrence(scheduled.id, 0, scheduled.roundAt, start))
+        ReminderAction.entries.forEach {
+            assertEquals(ActionOutcome.STALE, repository.performAction(scheduled.id, 0, it, start))
+            assertEquals(ActionOutcome.NOT_AVAILABLE, repository.performAction(scheduled.id, 1, it, selectedAt - 1))
+        }
+        assertEquals(changed, db.dao().occurrence(scheduled.id))
+        assertNull(db.dao().intake(scheduled.id))
+        assertEquals(plans, db.dao().schedules())
+        future.forEach { assertEquals(it, db.dao().occurrence(it.id)) }
+
+        assertEquals(ActionOutcome.APPLIED, repository.performAction(scheduled.id, 1, ReminderAction.TAKE, selectedAt))
+        val taken = db.dao().occurrence(scheduled.id)!!
+        assertEquals(scheduled.originalAt, taken.originalAt)
+        assertEquals(scheduled.date, taken.date)
+        assertEquals(selectedAt, db.dao().intake(scheduled.id)!!.actualAt)
+    }
     @Test fun snoozeRejectsOldRoundAndExactDeadlineLocks() = runBlocking {
         assertEquals(ActionOutcome.APPLIED, repository.performAction(original.id, 0, ReminderAction.SNOOZE, at + 25 * 60_000))
         repository.reconcile(at + 30 * 60_000)

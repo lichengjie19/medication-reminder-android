@@ -153,6 +153,14 @@ class MedicationRepository internal constructor(private val db: MedicationDataba
         result.outcome
     }
 
+    suspend fun rescheduleOccurrence(id: String, round: Int, reminderAt: Long, now: Long = System.currentTimeMillis()): ActionOutcome = db.withTransaction {
+        reconcileLocked(now)
+        val item = dao.occurrence(id) ?: return@withTransaction ActionOutcome.NOT_AVAILABLE
+        val result = ReminderReducer.reschedule(item, round, reminderAt, now)
+        persist(result.occurrence)
+        result.outcome
+    }
+
     suspend fun snapshot(): BackupSnapshot = db.withTransaction {
         reconcileLocked(System.currentTimeMillis())
         BackupSnapshot(cases = dao.cases(), medications = dao.medications(), schedules = dao.schedules(),

@@ -38,6 +38,7 @@ import com.chengjieli.medication.R
 import com.chengjieli.medication.data.OccurrenceEntity
 import com.chengjieli.medication.data.OccurrenceStatus
 import com.chengjieli.medication.data.ReminderAction
+import com.chengjieli.medication.domain.ReminderReducer
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
 import java.util.Locale
@@ -64,10 +65,11 @@ internal fun FocusTodayScreen(
     onAction: (OccurrenceEntity, ReminderAction) -> Unit,
     onRecord: (OccurrenceEntity) -> Unit, onAdd: () -> Unit,
     dailyDoseCounts: Map<String, Int> = emptyMap(),
+    onReschedule: (OccurrenceEntity) -> Unit = {},
 ) {
     val all = groups.flatMap { it.medicines }
-    val pending = all.filter { effectiveStatus(it, now) == OccurrenceStatus.PENDING }
-    val future = all.filter { effectiveStatus(it, now) in listOf(OccurrenceStatus.SCHEDULED, OccurrenceStatus.SNOOZED) }
+    val pending = all.filter { ReminderReducer.isAwaitingConfirmation(it, now) }
+    val future = all.filter { !ReminderReducer.isAwaitingConfirmation(it, now) && effectiveStatus(it, now) in listOf(OccurrenceStatus.SCHEDULED, OccurrenceStatus.SNOOZED) }
     val finished = all.filter { effectiveStatus(it, now) in listOf(OccurrenceStatus.TAKEN, OccurrenceStatus.SKIPPED) }
     val dark = isSystemInDarkTheme()
     val compact = LocalConfiguration.current.screenHeightDp < 800 && !LocalSeniorMode.current
@@ -84,14 +86,14 @@ internal fun FocusTodayScreen(
                     Column(Modifier.fillMaxWidth().padding(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                         Icon(Icons.Outlined.TaskAlt, null, Modifier.size(42.dp), tint = MaterialTheme.colorScheme.primary)
                         Text(if (all.isEmpty()) "今天暂无用药安排" else "现在没有待确认的用药", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-                        Text(if (future.isNotEmpty()) "下次提醒 ${localTime(future.first().roundAt)}" else if (all.isEmpty()) "添加药品，设置你的每日提醒。" else "今日结果可以在“记录”中查看。", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(if (future.isNotEmpty()) "下次提醒 ${reminderTimeLabel(future.first().roundAt, now)}" else if (all.isEmpty()) "添加药品，设置你的每日提醒。" else "今日结果可以在“记录”中查看。", color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
                 if (all.isEmpty()) Button(onClick = onAdd, modifier = Modifier.fillMaxWidth().heightIn(min = 58.dp)) { Text("添加用药事项") }
             }
         }
         items(pending, key = { "focus:${it.id}" }) { item ->
-            FocusDoseCard(graph, item, now, dailyDoseCounts[item.medicationId], onAction)
+            FocusDoseCard(graph, item, now, dailyDoseCounts[item.medicationId], onAction, onReschedule)
         }
         if (future.isNotEmpty()) {
             item { Text("接下来", Modifier.padding(start = 22.dp, top = 14.dp, bottom = 12.dp), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold) }
@@ -99,11 +101,11 @@ internal fun FocusTodayScreen(
                 val waiting = effectiveStatus(item, now) == OccurrenceStatus.SNOOZED
                 Surface(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 5.dp), shape = RoundedCornerShape(18.dp), color = MaterialTheme.colorScheme.surfaceContainerLowest) {
                     Row(Modifier.padding(16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.Top) {
-                        Text(localTime(item.roundAt), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                        Text(reminderTimeLabel(item.roundAt, now), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(5.dp)) {
                             Text(item.medicineName, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                             Text(listOfNotNull(item.doseValue.takeIf { it.isNotBlank() }?.let { "$it ${item.doseUnit}" }, if (waiting) "稍后提醒" else "未到时").joinToString(" · "), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            if (waiting) Text("等待期间不可操作", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+                            if (waiting) Text("${reminderTimeLabel(item.deadlineAt, now)}截止 · 等待提醒", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
                         }
                         Text("${item.quantity}${item.quantityUnit}", Modifier.widthIn(max = 96.dp), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, textAlign = TextAlign.End)
                     }
@@ -131,7 +133,7 @@ internal fun FocusTodayScreen(
 }
 
 @Composable
-private fun FocusDoseCard(graph: AppGraph, item: OccurrenceEntity, now: Long, dailyDoseCount: Int?, onAction: (OccurrenceEntity, ReminderAction) -> Unit) {
+private fun FocusDoseCard(graph: AppGraph, item: OccurrenceEntity, now: Long, dailyDoseCount: Int?, onAction: (OccurrenceEntity, ReminderAction) -> Unit, onReschedule: (OccurrenceEntity) -> Unit) {
     val senior = LocalSeniorMode.current
     val dark = isSystemInDarkTheme()
     val largeFont = LocalDensity.current.fontScale > 1.2f
@@ -162,16 +164,23 @@ private fun FocusDoseCard(graph: AppGraph, item: OccurrenceEntity, now: Long, da
                 item.imagePath?.let { path -> AsyncImage(graph.images.file(path), "${item.medicineName}图片", Modifier.size(72.dp).clip(RoundedCornerShape(16.dp)), contentScale = ContentScale.Crop) }
             }
             Text(listOfNotNull(item.doseValue.takeIf { it.isNotBlank() }?.let { "$it ${item.doseUnit}" }, item.mealNote.takeIf { it.isNotBlank() && it != "未注明" }, dailyDoseCount?.takeIf { it > 0 }?.let { "每日${it}次" }).joinToString(" · "), style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Surface(shape = CircleShape, color = MaterialTheme.colorScheme.surfaceContainerLowest.copy(alpha = .9f), modifier = Modifier.fillMaxWidth().padding(top = 4.dp)) {
-                Row(Modifier.padding(horizontal = 12.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.Center) {
-                    Icon(Icons.Outlined.Schedule, null, Modifier.size(22.dp), tint = MaterialTheme.colorScheme.primary)
-                    Spacer(Modifier.width(8.dp))
-                    Text("${localTime(item.roundAt)}提醒 · ${localTime(item.deadlineAt)}截止", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+            Surface(onClick = { onReschedule(item) }, enabled = ReminderReducer.isAwaitingConfirmation(item, now),
+                shape = RoundedCornerShape(24.dp), color = MaterialTheme.colorScheme.surfaceContainerLowest.copy(alpha = .9f), modifier = Modifier.fillMaxWidth().padding(top = 4.dp)) {
+                Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text("${reminderTimeLabel(item.roundAt, now)}提醒 · ${reminderTimeLabel(item.deadlineAt, now)}截止", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold, textAlign = TextAlign.Center)
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Icon(Icons.Outlined.Edit, null, Modifier.size(18.dp), tint = MaterialTheme.colorScheme.primary)
+                        Text("修改本次时间", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+                    }
                 }
             }
         }
     }
-    Column(Modifier.fillMaxWidth().padding(horizontal = 22.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    if (now < item.roundAt) {
+        Text("现在可修改本次时间，${reminderTimeLabel(item.roundAt, now)} 才会提醒并开放服用、稍后和跳过操作。",
+            Modifier.fillMaxWidth().padding(horizontal = 22.dp, vertical = 16.dp), style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant)
+    } else Column(Modifier.fillMaxWidth().padding(horizontal = 22.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         val available = effectiveStatus(item, now) == OccurrenceStatus.PENDING
         Button(onClick = { onAction(item, ReminderAction.TAKE) }, enabled = available, modifier = Modifier.fillMaxWidth().heightIn(min = if (senior) 64.dp else 60.dp), shape = CircleShape) { Text("我已服用", fontSize = if (senior) 26.sp else 24.sp, fontWeight = FontWeight.Bold) }
         OutlinedButton(onClick = { onAction(item, ReminderAction.SNOOZE) }, enabled = available, modifier = Modifier.fillMaxWidth().heightIn(min = if (senior) 60.dp else 52.dp), shape = CircleShape) { Text("10分钟后提醒我", fontSize = 20.sp, fontWeight = FontWeight.SemiBold) }

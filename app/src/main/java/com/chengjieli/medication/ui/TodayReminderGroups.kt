@@ -2,6 +2,7 @@ package com.chengjieli.medication.ui
 
 import com.chengjieli.medication.data.OccurrenceEntity
 import com.chengjieli.medication.data.OccurrenceStatus
+import com.chengjieli.medication.domain.ReminderReducer
 
 internal data class TodayReminderGroup(
     val roundAt: Long,
@@ -19,6 +20,7 @@ internal fun todayReminderGroups(
 ): List<TodayReminderGroup> = items
     .filter {
         it.date == today ||
+            ReminderReducer.isAwaitingConfirmation(it, now) ||
             (it.status in listOf(OccurrenceStatus.PENDING, OccurrenceStatus.SNOOZED) && now < it.deadlineAt)
     }
     .groupBy { it.roundAt to it.deadlineAt }
