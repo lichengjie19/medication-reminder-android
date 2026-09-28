@@ -54,9 +54,10 @@ import java.util.concurrent.TimeUnit
  * No taps, UI drivers, repository mutations, database restoration, or preference changes.
  * The normal MainActivity/Application startup lifecycle still runs when the activity launches.
  *
- * Select NativeDesignRenderTest#renderKeyPages (or pass designQa=true) to produce all 13 PNGs.
- * Pass historyQa=true for only the six history renders: case categories, record lists, a completed
- * intake detail dialog, and narrow-screen large-text variants. The full set also includes selected
+ * Select NativeDesignRenderTest#renderKeyPages (or pass designQa=true) to produce all 17 PNGs.
+ * Pass historyQa=true for only the ten history renders: case categories, medication summaries,
+ * record lists, a completed intake detail dialog, and narrow-screen large-text variants.
+ * The full set also includes selected
  * navigation tabs and the alarm screen in standard and senior modes, with a 30-minute countdown.
  * A normal full regression run skips this optional artifact generator.
  */
@@ -181,6 +182,32 @@ class NativeDesignRenderTest {
                     HistoryCaseList(fixtures.historyGroups, onSelect = {})
                 }
             }
+            capture("history-medication-summary") {
+                RenderHistoryPage {
+                    HistorySummaryScreen(fixtures.historySummaryGroup, fixtures.historyMedications, fixtures.now, onMedication = {})
+                }
+            }
+            capture("history-medication-summary-senior-narrow-font-1_5", senior = true, fontScale = 1.5f, renderWidthDp = 320) {
+                RenderHistoryPage {
+                    HistorySummaryScreen(fixtures.historySummaryGroup, fixtures.historyMedications, fixtures.now, onMedication = {})
+                }
+            }
+            capture("history-medication-detail") {
+                RenderHistoryPage {
+                    HistoryScreen(
+                        fixtures.medicationHistoryGroup, listOf(fixtures.intake), fixtures.now,
+                        medicationName = fixtures.medication.name, onRecord = {},
+                    )
+                }
+            }
+            capture("history-medication-detail-senior-narrow-font-1_5", senior = true, fontScale = 1.5f, renderWidthDp = 320) {
+                RenderHistoryPage {
+                    HistoryScreen(
+                        fixtures.medicationHistoryGroup, listOf(fixtures.intake), fixtures.now,
+                        medicationName = fixtures.medication.name, onRecord = {},
+                    )
+                }
+            }
             capture("history") {
                 RenderHistoryPage {
                     HistoryScreen(fixtures.historyGroup, listOf(fixtures.intake), fixtures.now, onRecord = {})
@@ -263,7 +290,7 @@ class NativeDesignRenderTest {
             put("captures", captures)
         }.toString(2))
         instrumentation.sendStatus(0, Bundle().apply { putString("nativeDesignRenderDirectory", directory.absolutePath) })
-        val expectedCaptures = if (adjustmentOnly) 4 else if (historyOnly) 6 else 13
+        val expectedCaptures = if (adjustmentOnly) 4 else if (historyOnly) 10 else 17
         assertTrue("Expected $expectedCaptures render artifacts", captures.length() == expectedCaptures)
     }
 
@@ -335,6 +362,19 @@ class NativeDesignRenderTest {
             now,
         )
         val historyGroup = historyGroups.single { it.caseId == case.id }
+        val historyMedications = listOf(
+            medication,
+            medication.copy(
+                id = "render-med-b", name = "示例药品 B", specification = "250 mg / 粒",
+                strengthValue = "250", quantityUnit = "粒", mealNote = "饭前", active = false,
+            ),
+        )
+        val historySummaryGroup = historyGroup.copy(
+            records = historyGroup.records + todayOccurrences.first { it.medicationId == medication.id },
+        )
+        val medicationHistoryGroup = historySummaryGroup.copy(
+            records = historySummaryGroup.records.filter { it.medicationId == medication.id },
+        )
         val intake = IntakeEntity(
             id = "render-intake-a", occurrenceId = "render-a-morning", actualAt = at("08:12"),
             quantity = "1", quantityUnit = "片", updatedAt = at("08:12"),

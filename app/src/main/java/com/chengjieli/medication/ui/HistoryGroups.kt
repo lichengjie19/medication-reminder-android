@@ -1,6 +1,7 @@
 package com.chengjieli.medication.ui
 
 import com.chengjieli.medication.data.CaseEntity
+import com.chengjieli.medication.data.MedicationEntity
 import com.chengjieli.medication.data.OccurrenceEntity
 import com.chengjieli.medication.data.OccurrenceStatus
 import com.chengjieli.medication.data.PlanStatus
@@ -11,6 +12,59 @@ internal data class HistoryCaseGroup(
     val status: PlanStatus?,
     val records: List<OccurrenceEntity>,
 )
+
+internal data class HistoryMedicationGroup(
+    val medicationId: String,
+    val name: String,
+    val active: Boolean?,
+    val records: List<OccurrenceEntity>,
+)
+
+internal data class HistoryStatusCounts(
+    val taken: Int = 0,
+    val skipped: Int = 0,
+    val pending: Int = 0,
+    val snoozed: Int = 0,
+    val scheduled: Int = 0,
+)
+
+internal fun historyMedicationGroups(
+    group: HistoryCaseGroup,
+    medications: List<MedicationEntity>,
+): List<HistoryMedicationGroup> {
+    val medicationsById = medications.filter { it.caseId == group.caseId }.associateBy { it.id }
+    val recordsByMedication = group.records.asSequence()
+        .filter { it.caseId == group.caseId }
+        .sortedWith(compareByDescending<OccurrenceEntity> { it.originalAt }.thenBy { it.id })
+        .groupBy { it.medicationId }
+    return (medicationsById.keys + recordsByMedication.keys).map { medicationId ->
+        val medication = medicationsById[medicationId]
+        val records = recordsByMedication[medicationId].orEmpty()
+        HistoryMedicationGroup(
+            medicationId = medicationId,
+            name = medication?.name?.takeIf { it.isNotBlank() }
+                ?: records.firstNotNullOfOrNull { it.medicineName.takeIf(String::isNotBlank) }
+                ?: "未命名药品",
+            active = medication?.active,
+            records = records,
+        )
+    }.sortedWith(
+        compareByDescending<HistoryMedicationGroup> { it.records.firstOrNull()?.originalAt ?: Long.MIN_VALUE }
+            .thenBy { it.name }.thenBy { it.medicationId },
+    )
+}
+
+// Match the detail rows even when a reminder has expired but the stored status has not caught up.
+internal fun historyStatusCounts(records: List<OccurrenceEntity>, now: Long): HistoryStatusCounts {
+    val counts = records.groupingBy { effectiveStatus(it, now) }.eachCount()
+    return HistoryStatusCounts(
+        taken = counts[OccurrenceStatus.TAKEN] ?: 0,
+        skipped = counts[OccurrenceStatus.SKIPPED] ?: 0,
+        pending = counts[OccurrenceStatus.PENDING] ?: 0,
+        snoozed = counts[OccurrenceStatus.SNOOZED] ?: 0,
+        scheduled = counts[OccurrenceStatus.SCHEDULED] ?: 0,
+    )
+}
 
 internal fun historyCaseGroups(
     cases: List<CaseEntity>,

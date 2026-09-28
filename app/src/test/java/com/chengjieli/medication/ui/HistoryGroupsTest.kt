@@ -1,6 +1,7 @@
 package com.chengjieli.medication.ui
 
 import com.chengjieli.medication.data.CaseEntity
+import com.chengjieli.medication.data.MedicationEntity
 import com.chengjieli.medication.data.OccurrenceEntity
 import com.chengjieli.medication.data.OccurrenceStatus
 import com.chengjieli.medication.data.PlanStatus
@@ -83,6 +84,99 @@ class HistoryGroupsTest {
         assertEquals(listOf(records.first()), historyRecordsForDate(records, "2026-09-20"))
         assertEquals(listOf(records.last()), historyRecordsForDate(records, "2026-09-21"))
         assertEquals(emptyList<OccurrenceEntity>(), historyRecordsForDate(records, "2026-09-19"))
+    }
+
+    @Test fun medicationSummaryKeepsSameNameMedicinesSeparateAndPrefersCurrentName() {
+        val oldRecord = record("a-old", "case", 10, OccurrenceStatus.TAKEN)
+            .copy(medicationId = "a", medicineName = "修改前药名", quantity = "2", doseValue = "10")
+        val newRecord = record("a-new", "case", 20, OccurrenceStatus.TAKEN)
+            .copy(medicationId = "a", medicineName = "较新药名", quantity = "3", doseValue = "15")
+        val otherRecord = record("b", "case", 30, OccurrenceStatus.SKIPPED)
+            .copy(medicationId = "b", medicineName = "共同药名")
+        val groups = historyMedicationGroups(
+            HistoryCaseGroup("case", "药单", PlanStatus.ACTIVE, listOf(oldRecord, otherRecord, newRecord)),
+            listOf(
+                MedicationEntity(id = "a", caseId = "case", name = "共同药名"),
+                MedicationEntity(id = "b", caseId = "case", name = "共同药名"),
+                MedicationEntity(id = "another-case", caseId = "other", name = "其他药单的药品"),
+            ),
+        )
+
+        assertEquals(listOf("b", "a"), groups.map { it.medicationId })
+        assertEquals(listOf("共同药名", "共同药名"), groups.map { it.name })
+        assertEquals(listOf(newRecord, oldRecord), groups.single { it.medicationId == "a" }.records)
+        assertEquals(listOf(otherRecord), groups.single { it.medicationId == "b" }.records)
+        assertEquals(listOf("3", "2"), groups.single { it.medicationId == "a" }.records.map { it.quantity })
+        assertEquals(listOf("15", "10"), groups.single { it.medicationId == "a" }.records.map { it.doseValue })
+    }
+
+    @Test fun medicationSummaryKeepsEndedAndEmptyMedicinesAndHistoricalOrphans() {
+        val groups = historyMedicationGroups(
+            HistoryCaseGroup("case", "药单", PlanStatus.ENDED, listOf(
+                record("old", "case", 10).copy(medicationId = "missing", medicineName = "旧药名"),
+                record("new", "case", 20).copy(medicationId = "missing", medicineName = "最近历史药名"),
+                record("blank", "case", 30).copy(medicationId = "missing", medicineName = ""),
+                record("ended-record", "case", 15).copy(medicationId = "ended", medicineName = "旧名称"),
+            )),
+            listOf(
+                MedicationEntity(id = "empty", caseId = "case", name = "无记录药品"),
+                MedicationEntity(id = "ended", caseId = "case", name = "已结束药品", active = false),
+                MedicationEntity(id = "empty-ended", caseId = "case", name = "结束但无记录", active = false),
+            ),
+        )
+
+        assertEquals(4, groups.size)
+        assertEquals("missing", groups.first().medicationId)
+        assertEquals("最近历史药名", groups.first().name)
+        assertNull(groups.first().active)
+        assertEquals(listOf("blank", "new", "old"), groups.first().records.map { it.id })
+        assertEquals(false, groups.single { it.medicationId == "ended" }.active)
+        assertEquals("已结束药品", groups.single { it.medicationId == "ended" }.name)
+        assertEquals(true, groups.single { it.medicationId == "empty" }.active)
+        assertEquals(emptyList<OccurrenceEntity>(), groups.single { it.medicationId == "empty" }.records)
+        assertEquals(false, groups.single { it.medicationId == "empty-ended" }.active)
+        assertEquals(emptyList<OccurrenceEntity>(), groups.single { it.medicationId == "empty-ended" }.records)
+    }
+
+    @Test fun medicationSummaryFallsBackForBlankNamesWithoutIncludingAnotherCaseRecords() {
+        val groups = historyMedicationGroups(
+            HistoryCaseGroup("case", "药单", PlanStatus.ACTIVE, listOf(
+                record("blank", "case", 10).copy(medicationId = "blank"),
+                record("named", "case", 20).copy(medicationId = "named", medicineName = "历史名称"),
+                record("other", "other", 30).copy(medicationId = "other", medicineName = "其他药单"),
+            )),
+            listOf(MedicationEntity(id = "named", caseId = "case", name = " ")),
+        )
+
+        assertEquals(listOf("named", "blank"), groups.map { it.medicationId })
+        assertEquals(listOf("历史名称", "未命名药品"), groups.map { it.name })
+    }
+
+    @Test fun summaryCountsChangeAtReminderRoundAndDeadlineBoundaries() {
+        val records = listOf(record("reminder", "case", 90).copy(roundAt = 100, deadlineAt = 200))
+
+        assertEquals(HistoryStatusCounts(scheduled = 1), historyStatusCounts(records, 99))
+        assertEquals(HistoryStatusCounts(pending = 1), historyStatusCounts(records, 100))
+        assertEquals(HistoryStatusCounts(pending = 1), historyStatusCounts(records, 199))
+        assertEquals(HistoryStatusCounts(skipped = 1), historyStatusCounts(records, 200))
+        assertEquals(OccurrenceStatus.SCHEDULED, records.single().status)
+    }
+
+    @Test fun summaryCountsSeparateWaitingSnoozesAndKeepCompletedStatuses() {
+        val records = listOf(
+            record("scheduled", "case", 90).copy(roundAt = 101, deadlineAt = 200),
+            record("waiting", "case", 90, OccurrenceStatus.SNOOZED).copy(roundAt = 101, deadlineAt = 200),
+            record("due", "case", 90, OccurrenceStatus.SNOOZED).copy(roundAt = 100, deadlineAt = 200),
+            record("expired", "case", 90, OccurrenceStatus.PENDING).copy(roundAt = 90, deadlineAt = 100),
+            record("taken", "case", 90, OccurrenceStatus.TAKEN).copy(roundAt = 90, deadlineAt = 100),
+            record("skipped", "case", 90, OccurrenceStatus.SKIPPED).copy(roundAt = 200, deadlineAt = 300),
+        )
+
+        assertEquals(
+            HistoryStatusCounts(taken = 1, skipped = 2, pending = 1, snoozed = 1, scheduled = 1),
+            historyStatusCounts(records, 100),
+        )
+        assertEquals(HistoryStatusCounts(), historyStatusCounts(emptyList(), 100))
     }
 
     private fun record(

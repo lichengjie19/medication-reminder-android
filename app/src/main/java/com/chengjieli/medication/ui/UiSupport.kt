@@ -5,7 +5,6 @@ import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -184,7 +183,7 @@ internal fun ImageAttachments(graph: AppGraph, title: String, paths: List<String
                 if (seniorMode) {
                     Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                            AsyncImage(graph.images.file(path), "$title ${index + 1}", Modifier.size(88.dp).clickable(enabled = !busy) { editPath = path }, contentScale = ContentScale.Crop)
+                            PreviewableImage(graph, path, "$title ${index + 1}", Modifier.size(88.dp), enabled = !busy)
                             Text(if (index == 0) "封面图片" else "图片 ${index + 1}", Modifier.weight(1f))
                         }
                         OutlinedButton(onClick = { editPath = path }, enabled = !busy, modifier = Modifier.fillMaxWidth()) {
@@ -196,7 +195,7 @@ internal fun ImageAttachments(graph: AppGraph, title: String, paths: List<String
                     }
                 } else {
                     Row(Modifier.padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                        AsyncImage(graph.images.file(path), "$title ${index + 1}", Modifier.size(76.dp).clickable { editPath = path }, contentScale = ContentScale.Crop)
+                        PreviewableImage(graph, path, "$title ${index + 1}", Modifier.size(76.dp), enabled = !busy)
                         Text(if (index == 0) "封面图片" else "图片 ${index + 1}", Modifier.weight(1f).padding(horizontal = 12.dp))
                         IconButton(onClick = { editPath = path }, enabled = !busy) { Icon(Icons.Outlined.Crop, "旋转或裁剪图片") }
                         IconButton(onClick = { onChange(paths.filterIndexed { i, _ -> i != index }) }, enabled = !busy) { Icon(Icons.Outlined.Close, "移除此图片") }

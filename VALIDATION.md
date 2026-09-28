@@ -175,3 +175,28 @@ Android 8、目标 Android 16/API36 设备，以及具体手机厂商的后台�
 - APK：`work/releases/v1.3.2/medication-reminder-v1.3.2.apk`，65,018,890 字节。SHA-256：`4b7aca7b0260d33f9ca0b3ee3023b96179db4b21a831d0541225f8de4c4a0fa5`，同时提供 `SHA256SUMS`。
 - APK v2 签名校验通过，证书 SHA-256 仍为 `49d9770c7a0078dbbe3cc45cf0cd63da4bdb6bfab06e0defbaee15349e0abaab`；API 35 模拟器从本次 v1.3.1 测试包覆盖安装成功，包管理器确认版本为 1.3.2/6，主页面启动成功。
 - 功能验证沿用本次 87 项 JVM 单测、34 项模拟器测试及 Lint 0 错误的结果；版本打包后未重复运行全部功能回归，未进行真机验收。
+
+## 单药结束与按药品汇总（2026-09-23，本地开发包）
+
+- 药单内使用「结束此药品／恢复此药品」及确认弹窗；停止当前未处理和未来提醒，保留已服、已跳过及实际数量。同药单其他药品独立执行，恢复整份药单不会重新启用已结束药品。沿用现有 `active` 字段及仓储事务，未修改数据表或备份格式。
+- 记录路径为「药单 → 各药品汇总 → 该药明细 → 单条详情」，按药品 ID 分组，保留已结束、无记录和仅有历史快照的药品；日期筛选、只读详情与历史剂量计算沿用原规则。
+- 92 项 JVM 单测通过，0 失败；API 35 模拟器 37 项检查通过（仓储 30、系统调度 6、原生渲染 1），0 失败、0 跳过。新增 4 项仓储、5 项汇总回归。日志：`work/build-medication-summary.log`、`work/validation-medication-summary.log`。
+- 窄屏大字截图检查后精简汇总顶部和零次的次要状态。最终 `assembleDebug`、`assembleDebugAndroidTest`、`lintDebug` 通过，Lint 0 错误、32 条建议；仅调整布局后未重复执行全部业务测试。最终生产组件渲染专项通过，10 张截图包含普通与 320dp、1.5 倍字体的药品汇总和明细，见 `work/medication-summary-qa/design-qa/`。
+- 模拟器实际点击使用合成数据，检查结束确认的取消与确认、其他药品继续执行、药品汇总进入明细和只读详情、返回来源页面。最终覆盖安装后，药品 A 仍显示已结束，其两条历史记录、实际数量 1.5 片与历史剂量 150 mg 保持；交互证据见 `work/interaction-medication-summary-final.log` 及 `work/medication-summary-qa/interaction-*.png`。
+- APK：`work/releases/medication-summary/medication-reminder-medication-summary.apk`，沿用 versionName 1.3.2 / versionCode 6；SHA-256 `667f062b4e629f93b80d311851777592df3bfd72d343c2cf5a3924ff8ed7a681`。签名验证通过，证书 SHA-256 仍为 `49d9770c7a0078dbbe3cc45cf0cd63da4bdb6bfab06e0defbaee15349e0abaab`，模拟器 `install -r` 成功。本次为本地开发包，未发布远程版本、未连接真实手机。
+
+
+## 药品图片放大查看（2026-09-28，本地开发包）
+
+- 今日待确认卡片、共用用药卡片、药单详情、药品编辑封面及图片附件接入统一只读预览。全屏按比例显示完整图片，支持 1–5 倍双指缩放、双击放大/还原、放大后拖动，以及放大、缩小、还原按钮；关闭或系统返回仅退出预览。图片编辑仍使用原旋转/裁剪按钮，共用 OCR 附件提示已同步。
+- JDK 17 离线 `assembleDebug`、`lintDebug` 成功，Lint 0 错误、29 条建议；日志 `work/build-image-preview-final.log`。本次改动仅涉及图片展示，未重新运行完整业务回归。
+- APK：`work/releases/image-preview/medication-reminder-image-preview.apk`，沿用 versionName 1.3.2 / versionCode 6。本地包包含当前工作树已有的单药结束、服药汇总更新，未发布远程版本。SHA-256：`2350f6384f0358408cc5ceb3d595239541949ba53538f64d4add63a61e761550`，同目录提供 `SHA256SUMS`。
+- APK v2 签名验证通过，证书 SHA-256 为既有的 `49d9770c7a0078dbbe3cc45cf0cd63da4bdb6bfab06e0defbaee15349e0abaab`。未连接真实手机。
+- API 35 测试模拟器使用合成图片实际检查：附件点击进入完整大图、按钮放大、双击放大、放大后拖动、还原及关闭。还原截图与初始 Fit 截图像素一致；编辑器封面点击打开后按系统返回，仅关闭预览，资料区仍保持收起，未触发外层卡片。截图位于 `work/image-preview-qa/`。双指手势、缺图及窄屏大字本轮未做设备交互验证，不将上述检查等同于真机验收。
+- 最终交付 APK 在专用模拟器覆盖安装并启动成功；从设备读取的已安装 APK SHA-256 与交付包一致。完整交互记录见 `work/image-preview-qa/results.md`。
+
+## 远程同步前复验（2026-09-28）
+
+- 当前开发分支包含单药结束与恢复、按药品汇总服药记录、图片全屏预览。JDK 17 离线执行 `testDebugUnitTest assembleDebug assembleDebugAndroidTest lintDebug` 成功。
+- 92 项 JVM 单测通过，0 失败、0 错误、0 跳过；Lint 0 错误、29 条建议。日志：`work/remote-sync-validation.log`。
+- 本轮仅构建设备测试 APK，未重新执行模拟器或真机测试；应用版本号仍为 1.3.2 / 6，未创建新的 APK Release。

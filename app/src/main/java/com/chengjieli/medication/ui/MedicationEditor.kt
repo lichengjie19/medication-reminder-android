@@ -169,8 +169,8 @@ internal fun MedicationEditor(graph: AppGraph, request: EditMedicationRequest, a
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLowest),
             ) {
                 Row(Modifier.fillMaxWidth().padding(20.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    if (images.isNotEmpty()) AsyncImage(
-                        graph.images.file(images.first()), "药品封面", Modifier.size(56.dp).clip(RoundedCornerShape(12.dp)), contentScale = ContentScale.Crop,
+                    if (images.isNotEmpty()) PreviewableImage(
+                        graph, images.first(), "药品封面", Modifier.size(56.dp).clip(RoundedCornerShape(12.dp)),
                     )
                     Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         Text(name.ifBlank { "填写药品资料" }, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)

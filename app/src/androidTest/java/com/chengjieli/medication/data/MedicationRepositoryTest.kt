@@ -338,6 +338,124 @@ class MedicationRepositoryTest {
         assertTrue(db.dao().occurrences().none { it.status == OccurrenceStatus.SCHEDULED })
     }
 
+    @Test fun endingOneMedicationStopsItsOpenDosesAndKeepsSiblingMedicationUnchanged() = runBlocking {
+        val sibling = addSiblingMedication()
+        val snoozedSchedule = ScheduleEntity(id = "snoozedSchedule", medicationId = original.medicationId,
+            time = "20:00", effectiveFrom = at)
+        val snoozed = original.copy(id = "snoozed", scheduleId = snoozedSchedule.id,
+            status = OccurrenceStatus.SNOOZED, round = 1, roundAt = at + ReminderReducer.SNOOZE_MILLIS,
+            deadlineAt = at + ReminderReducer.SNOOZE_MILLIS + ReminderReducer.WINDOW_MILLIS)
+        db.dao().putSchedule(snoozedSchedule)
+        db.dao().putOccurrence(snoozed)
+        repository.reconcile(at)
+        val siblingOccurrences = db.dao().occurrences().filter { it.medicationId == sibling.id }.associateBy { it.id }
+        val schedules = db.dao().schedules().associateBy { it.id }
+        val plan = db.dao().cases().single()
+        val futureDoses = db.dao().occurrences().filter {
+            it.medicationId == original.medicationId && it.status == OccurrenceStatus.SCHEDULED
+        }
+        assertTrue(futureDoses.isNotEmpty())
+        assertTrue(siblingOccurrences.values.any { it.status == OccurrenceStatus.SCHEDULED })
+
+        repository.setMedicationActive(original.medicationId, false, at)
+
+        assertFalse(db.dao().medications().single { it.id == original.medicationId }.active)
+        assertEquals(sibling, db.dao().medications().single { it.id == sibling.id })
+        assertEquals(plan, db.dao().cases().single())
+        assertEquals(schedules, db.dao().schedules().associateBy { it.id })
+        assertEquals(siblingOccurrences, db.dao().occurrences().filter { it.medicationId == sibling.id }.associateBy { it.id })
+        futureDoses.forEach { assertNull(db.dao().occurrence(it.id)) }
+        listOf(original, snoozed).forEach { dose ->
+            assertEquals(dose.copy(status = OccurrenceStatus.SKIPPED, skipReason = SkipReason.PLAN_STOPPED,
+                processedAt = at), db.dao().occurrence(dose.id))
+            ReminderAction.entries.forEach { action ->
+                assertEquals(ActionOutcome.NOT_AVAILABLE, repository.performAction(dose.id, dose.round, action, at))
+            }
+        }
+        assertTrue(db.dao().occurrences().none {
+            it.medicationId == original.medicationId && it.status in ReminderReducer.openStatuses
+        })
+        assertTrue(db.dao().intakes().isEmpty())
+    }
+
+    @Test fun endingMedicationPreservesTakenAndManuallySkippedHistoryAndIntake() = runBlocking {
+        val skippedSchedule = ScheduleEntity(id = "skippedSchedule", medicationId = original.medicationId,
+            time = "20:00", effectiveFrom = at)
+        val skipped = original.copy(id = "skipped", scheduleId = skippedSchedule.id)
+        db.dao().putSchedule(skippedSchedule)
+        db.dao().putOccurrence(skipped)
+        assertEquals(ActionOutcome.APPLIED, repository.performAction(original.id, 0, ReminderAction.TAKE, at))
+        assertEquals(ActionOutcome.APPLIED, repository.performAction(skipped.id, 0, ReminderAction.SKIP, at))
+        val takenHistory = db.dao().occurrence(original.id)!!
+        val skippedHistory = db.dao().occurrence(skipped.id)!!
+        val intake = db.dao().intake(original.id)!!
+
+        repository.setMedicationActive(original.medicationId, false, at + 1000)
+        repository.reconcile(original.deadlineAt + 1000)
+
+        assertEquals(takenHistory, db.dao().occurrence(original.id))
+        assertEquals(skippedHistory, db.dao().occurrence(skipped.id))
+        assertEquals(listOf(intake), db.dao().intakes())
+        assertTrue(db.dao().occurrences().none { it.status in ReminderReducer.openStatuses })
+    }
+
+    @Test fun resumingWholePlanDoesNotRestartAnIndividuallyEndedMedication() = runBlocking {
+        val sibling = addSiblingMedication()
+        repository.setMedicationActive(original.medicationId, false, at)
+        val endedDose = db.dao().occurrence(original.id)!!
+        repository.setCaseStatus(original.caseId, PlanStatus.PAUSED, at)
+        repository.setCaseStatus(original.caseId, PlanStatus.ACTIVE, at)
+        val nextReminderAt = LocalDate.parse(date).plusDays(1).atTime(8, 0)
+            .atZone(ZoneId.systemDefault()).toInstant().toEpochMilli()
+
+        repository.reconcile(nextReminderAt)
+
+        assertEquals(PlanStatus.ACTIVE, db.dao().cases().single().status)
+        assertFalse(db.dao().medications().single { it.id == original.medicationId }.active)
+        assertTrue(db.dao().medications().single { it.id == sibling.id }.active)
+        assertEquals(endedDose, db.dao().occurrence(original.id))
+        assertTrue(db.dao().occurrences().none {
+            it.medicationId == original.medicationId && it.status in ReminderReducer.openStatuses
+        })
+        assertTrue(db.dao().occurrences().any {
+            it.medicationId == sibling.id && it.roundAt == nextReminderAt && it.status == OccurrenceStatus.PENDING
+        })
+    }
+
+    @Test fun backupRestoreKeepsIndividuallyEndedMedicationAndActiveSibling() = runBlocking {
+        val sibling = addSiblingMedication()
+        repository.setMedicationActive(original.medicationId, false, at)
+        val backup = repository.snapshot()
+        val endedDose = db.dao().occurrence(original.id)!!
+        repository.setMedicationActive(original.medicationId, true, at)
+        assertTrue(db.dao().occurrences().any {
+            it.medicationId == original.medicationId && it.status == OccurrenceStatus.SCHEDULED
+        })
+
+        repository.restoreSnapshot(backup, at)
+        repository.reconcile(at)
+
+        assertFalse(db.dao().medications().single { it.id == original.medicationId }.active)
+        assertEquals(sibling, db.dao().medications().single { it.id == sibling.id })
+        assertEquals(endedDose, db.dao().occurrence(original.id))
+        assertTrue(db.dao().occurrences().none {
+            it.medicationId == original.medicationId && it.status in ReminderReducer.openStatuses
+        })
+        assertTrue(db.dao().occurrences().any {
+            it.medicationId == sibling.id && it.status == OccurrenceStatus.SCHEDULED
+        })
+    }
+
+    private suspend fun addSiblingMedication(): MedicationEntity {
+        val sibling = db.dao().medications().single().copy(id = "siblingMedication", name = "同药单另一药品")
+        val schedule = db.dao().schedules().single().copy(id = "siblingSchedule", medicationId = sibling.id)
+        db.dao().putMedication(sibling)
+        db.dao().putSchedule(schedule)
+        db.dao().putOccurrence(original.copy(id = "siblingOccurrence", scheduleId = schedule.id,
+            medicationId = sibling.id, medicineName = sibling.name))
+        return sibling
+    }
+
     private fun futureShanghaiItem(): OccurrenceEntity {
         val futureDate = Instant.ofEpochMilli(at).atZone(ZoneId.of("Asia/Shanghai")).toLocalDate().plusDays(2)
         val planned = futureDate.atTime(LocalTime.of(8, 0)).atZone(ZoneId.of("Asia/Shanghai")).toInstant().toEpochMilli()

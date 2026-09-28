@@ -14,8 +14,6 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -47,6 +45,7 @@ fun MedicationApp(graph: AppGraph, openTodayRequest: Int = 0) {
         var tab by rememberSaveable { mutableIntStateOf(0) }
         var caseId by rememberSaveable { mutableStateOf<String?>(null) }
         var historyCaseId by rememberSaveable { mutableStateOf<String?>(null) }
+        var historyMedicationId by rememberSaveable { mutableStateOf<String?>(null) }
         var caseEditor by rememberSaveable(stateSaver = jsonSaver<CaseEntity?>()) { mutableStateOf<CaseEntity?>(null) }
         var medicationEditor by rememberSaveable(stateSaver = jsonSaver<EditMedicationRequest?>()) { mutableStateOf<EditMedicationRequest?>(null) }
         var recordDetails by rememberSaveable(stateSaver = jsonSaver<OccurrenceEntity?>()) { mutableStateOf<OccurrenceEntity?>(null) }
@@ -59,11 +58,15 @@ fun MedicationApp(graph: AppGraph, openTodayRequest: Int = 0) {
         val selectedCase = cases.find { it.id == caseId }
         val historyGroups = remember(cases, occurrences, now) { historyCaseGroups(cases, occurrences, now) }
         val selectedHistory = historyGroups.find { it.caseId == historyCaseId }
+        val historyMedicines = remember(selectedHistory, meds) {
+            selectedHistory?.let { historyMedicationGroups(it, meds) }.orEmpty()
+        }
+        val selectedHistoryMedicine = historyMedicines.find { it.medicationId == historyMedicationId }
         LaunchedEffect(openTodayRequest) {
             if (openTodayRequest > 0) {
                 medicationEditor = null; caseEditor = null; recordDetails = null
                 ocrMode = false; caseId = null; historyCaseId = null; tab = 0; confirmation = null
-                timeAdjustment = null
+                timeAdjustment = null; historyMedicationId = null
             }
         }
         LaunchedEffect(graph, lifecycle) {
@@ -98,6 +101,7 @@ fun MedicationApp(graph: AppGraph, openTodayRequest: Int = 0) {
             when {
                 medicationEditor != null -> medicationEditor = null
                 ocrMode -> ocrMode = false
+                historyMedicationId != null -> historyMedicationId = null
                 historyCaseId != null -> historyCaseId = null
                 else -> caseId = null
             }
@@ -116,11 +120,11 @@ fun MedicationApp(graph: AppGraph, openTodayRequest: Int = 0) {
                 topBar = {
                     val home = tab == 0 && selectedCase == null && historyCaseId == null && !ocrMode
                     FocusPageHeader(
-                        title = if (ocrMode) "识别药单" else if (historyCaseId != null) "服药记录" else selectedCase?.title ?: listOf("今日用药", "我的药单", "服药记录", "设置")[tab],
+                        title = if (ocrMode) "识别药单" else if (historyMedicationId != null) "服药明细" else if (historyCaseId != null) "服药汇总" else selectedCase?.title ?: listOf("今日用药", "我的药单", "服药记录", "设置")[tab],
                         home = home,
                         onBack = if (selectedCase != null || ocrMode || historyCaseId != null) (::back) else null,
                         onEdit = if (selectedCase != null && !ocrMode && historyCaseId == null) ({ caseEditor = selectedCase }) else null,
-                        onHistory = { historyCaseId = null; tab = 2 },
+                        onHistory = { historyCaseId = null; historyMedicationId = null; tab = 2 },
                     )
                 },
                 snackbarHost = { SnackbarHost(snackbar) },
@@ -131,20 +135,27 @@ fun MedicationApp(graph: AppGraph, openTodayRequest: Int = 0) {
             ) { padding ->
                 Box(Modifier.padding(padding).fillMaxSize()) {
                     when {
+                        selectedHistory != null && selectedHistoryMedicine != null -> key(selectedHistory.caseId, selectedHistoryMedicine.medicationId) {
+                            HistoryScreen(selectedHistory.copy(records = selectedHistoryMedicine.records), intakes, now,
+                                medicationName = selectedHistoryMedicine.name) { recordDetails = it }
+                        }
                         selectedHistory != null -> key(selectedHistory.caseId) {
-                            HistoryScreen(selectedHistory, intakes, now) { recordDetails = it }
+                            HistorySummaryScreen(selectedHistory, meds, now) { historyMedicationId = it.medicationId }
                         }
                         ocrMode && selectedCase != null -> OcrImportScreen(graph, selectedCase, ocrImages, { ocrImages = it; drafts = emptyList() }, drafts, { drafts = it }, { draft, index -> medicationEditor = EditMedicationRequest(selectedCase.id, draft = draft, draftIndex = index, prescriptionImage = ocrImages.firstOrNull()) }, { item -> mutate { graph.repository.saveCase(item) } })
                         selectedCase != null -> CaseDetail(graph, selectedCase, meds.filter { it.caseId == selectedCase.id }, schedules,
                             onNewMedication = { medicationEditor = EditMedicationRequest(selectedCase.id) },
                             onEditMedication = { medicationEditor = EditMedicationRequest(selectedCase.id, medication = it) },
                             onOcr = { ocrImages = emptyList(); drafts = emptyList(); ocrMode = true },
-                            onHistory = { historyCaseId = selectedCase.id },
+                            onHistory = { historyMedicationId = null; historyCaseId = selectedCase.id },
                             onStatus = { status -> mutate { graph.repository.setCaseStatus(selectedCase.id, status) } },
-                            onMedicationActive = { medication, active -> mutate { graph.repository.setMedicationActive(medication.id, active) } })
+                            onMedicationActive = { medication, active -> mutate {
+                                graph.repository.setMedicationActive(medication.id, active)
+                                report(if (active) "已恢复 ${medication.name}" else "已结束 ${medication.name}，历史记录已保留")
+                            } })
                         tab == 0 -> FocusTodayScreen(graph, todayReminderGroups(occurrences, LocalDate.now().toString(), now), now, ::action, { recordDetails = it }, onAdd = { tab = 1; caseEditor = CaseEntity() }, dailyDoseCounts = schedules.filter { it.enabled }.groupingBy { it.medicationId }.eachCount(), onReschedule = { timeAdjustment = it })
                         tab == 1 -> CaseList(cases, meds, { caseId = it.id }, { caseEditor = CaseEntity() })
-                        tab == 2 -> HistoryCaseList(historyGroups) { historyCaseId = it.caseId }
+                        tab == 2 -> HistoryCaseList(historyGroups) { historyMedicationId = null; historyCaseId = it.caseId }
                         else -> SettingsScreen(graph, seniorMode.value, { seniorMode.value = it }, ::report)
                     }
                 }
@@ -269,7 +280,7 @@ private fun OccurrenceContent(graph: AppGraph, item: OccurrenceEntity, now: Long
     val senior = LocalSeniorMode.current
     Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            item.imagePath?.let { AsyncImage(graph.images.file(it), "${item.medicineName}图片", Modifier.size(if (senior) 80.dp else 56.dp), contentScale = ContentScale.Crop) }
+            item.imagePath?.let { PreviewableImage(graph, it, "${item.medicineName}图片", Modifier.size(if (senior) 80.dp else 56.dp)) }
             Column(Modifier.weight(1f)) {
                 Text(if (showTime) "${localTime(item.roundAt)}  ${item.medicineName}" else item.medicineName, style = MaterialTheme.typography.titleMedium)
                 Text(item.caseTitle, style = MaterialTheme.typography.bodySmall)
@@ -332,8 +343,9 @@ private fun CaseList(cases: List<CaseEntity>, meds: List<MedicationEntity>, sele
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun CaseDetail(graph: AppGraph, item: CaseEntity, meds: List<MedicationEntity>, schedules: List<ScheduleEntity>, onNewMedication: () -> Unit, onEditMedication: (MedicationEntity) -> Unit, onOcr: () -> Unit, onHistory: () -> Unit, onStatus: (PlanStatus) -> Unit, onMedicationActive: (MedicationEntity, Boolean) -> Unit) {
+internal fun CaseDetail(graph: AppGraph, item: CaseEntity, meds: List<MedicationEntity>, schedules: List<ScheduleEntity>, onNewMedication: () -> Unit, onEditMedication: (MedicationEntity) -> Unit, onOcr: () -> Unit, onHistory: () -> Unit, onStatus: (PlanStatus) -> Unit, onMedicationActive: (MedicationEntity, Boolean) -> Unit) {
     var confirmStatus by remember { mutableStateOf<PlanStatus?>(null) }
+    var confirmMedicationId by rememberSaveable(item.id) { mutableStateOf<String?>(null) }
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item {
             if (LocalSeniorMode.current) Text(item.title, style = MaterialTheme.typography.titleLarge)
@@ -361,26 +373,46 @@ private fun CaseDetail(graph: AppGraph, item: CaseEntity, meds: List<MedicationE
             ElevatedCard(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        medicine.imagePaths.firstOrNull()?.let { AsyncImage(graph.images.file(it), "${medicine.name}图片", Modifier.size(56.dp).padding(end = 8.dp), contentScale = ContentScale.Crop) }
+                        medicine.imagePaths.firstOrNull()?.let { PreviewableImage(graph, it, "${medicine.name}图片", Modifier.size(56.dp).padding(end = 8.dp)) }
                         Text(medicine.name, Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
-                        if (!LocalSeniorMode.current) Switch(medicine.active, { onMedicationActive(medicine, it) }, modifier = Modifier.semantics { contentDescription = "${medicine.name}提醒" })
                     }
-                    if (LocalSeniorMode.current) Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                        Text(if (medicine.active) "药品提醒已开启" else "药品提醒已暂停", Modifier.weight(1f))
-                        Switch(medicine.active, { onMedicationActive(medicine, it) }, modifier = Modifier.semantics { contentDescription = "${medicine.name}提醒" })
-                    }
+                    Text(if (!medicine.active) "已结束" else if (item.status != PlanStatus.ACTIVE) "随药单${planLabel(item.status).removePrefix("已")}" else "执行中",
+                        style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
                     if (medicine.specification.isNotBlank()) Text(medicine.specification)
-                    Text("${medicine.startDate} 至 ${medicine.endDate ?: "持续执行"} · ${medicine.mealNote}", style = MaterialTheme.typography.bodySmall)
+                    Text("计划用药期：${medicine.startDate} 至 ${medicine.endDate ?: "未设结束日期"} · ${medicine.mealNote}", style = MaterialTheme.typography.bodySmall)
+                    if (!medicine.active) Text("已停止提醒，服药记录保留。以下为原用药安排。", style = MaterialTheme.typography.bodySmall)
                     schedules.filter { it.medicationId == medicine.id && it.enabled }.sortedBy { it.time }.forEach { schedule ->
                         Text("${schedule.time} · 每次数量：${schedule.quantity} ${medicine.quantityUnit}" + if (schedule.doseValue.isBlank()) "" else "\n总剂量：${schedule.doseValue} ${schedule.doseUnit}")
                     }
                     if (medicine.notes.isNotBlank()) Text(medicine.notes, style = MaterialTheme.typography.bodySmall)
                     TextButton(onClick = { onEditMedication(medicine) }) { Text("编辑药品与安排") }
+                    OutlinedButton(onClick = { confirmMedicationId = medicine.id }, modifier = Modifier.fillMaxWidth()) {
+                        Text(if (medicine.active) "结束此药品" else "恢复此药品")
+                    }
                 }
             }
         }
     }
     confirmStatus?.let { status -> AlertDialog(onDismissRequest = { confirmStatus = null }, title = { Text("${planLabel(status)}此事项") }, text = { Text(if (status == PlanStatus.ACTIVE) "将从当前时间恢复未来安排，历史记录保持不变。" else "将取消此事项的待执行提醒，保留药品信息和历史记录。") }, confirmButton = { TextButton(onClick = { onStatus(status); confirmStatus = null }) { Text("确认") } }, dismissButton = { TextButton(onClick = { confirmStatus = null }) { Text("取消") } }) }
+    meds.find { it.id == confirmMedicationId }?.let { medicine ->
+        AlertDialog(
+            onDismissRequest = { confirmMedicationId = null },
+            title = { Text(if (medicine.active) "结束此药品？" else "恢复此药品？") },
+            text = {
+                Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text(medicine.name, style = MaterialTheme.typography.titleLarge)
+                    Text(if (medicine.active) "结束后停止这一个药品当前未处理及之后的提醒，保留已经记录的服药情况。药单内其他药品继续按原安排执行。"
+                        else "按这一个药品原设定的用药日期和时刻恢复未来提醒，历史记录保持不变。")
+                    if (!medicine.active && item.status != PlanStatus.ACTIVE) Text("当前药单${planLabel(item.status)}，恢复药单执行后才会提醒。")
+                }
+            },
+            confirmButton = { TextButton(onClick = {
+                confirmMedicationId = null
+                onMedicationActive(medicine, !medicine.active)
+            }) { Text(if (medicine.active) "确认结束" else "确认恢复") } },
+            dismissButton = { TextButton(onClick = { confirmMedicationId = null }) { Text("取消") } },
+        )
+    }
 }
 
 @Composable

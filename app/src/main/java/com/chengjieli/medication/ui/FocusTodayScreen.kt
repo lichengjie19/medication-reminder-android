@@ -32,7 +32,6 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import coil.compose.AsyncImage
 import com.chengjieli.medication.AppGraph
 import com.chengjieli.medication.R
 import com.chengjieli.medication.data.OccurrenceEntity
@@ -161,7 +160,7 @@ private fun FocusDoseCard(graph: AppGraph, item: OccurrenceEntity, now: Long, da
             }
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text(item.medicineName, Modifier.weight(1f), style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
-                item.imagePath?.let { path -> AsyncImage(graph.images.file(path), "${item.medicineName}图片", Modifier.size(72.dp).clip(RoundedCornerShape(16.dp)), contentScale = ContentScale.Crop) }
+                item.imagePath?.let { path -> PreviewableImage(graph, path, "${item.medicineName}图片", Modifier.size(72.dp).clip(RoundedCornerShape(16.dp))) }
             }
             Text(listOfNotNull(item.doseValue.takeIf { it.isNotBlank() }?.let { "$it ${item.doseUnit}" }, item.mealNote.takeIf { it.isNotBlank() && it != "未注明" }, dailyDoseCount?.takeIf { it > 0 }?.let { "每日${it}次" }).joinToString(" · "), style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Surface(onClick = { onReschedule(item) }, enabled = ReminderReducer.isAwaitingConfirmation(item, now),

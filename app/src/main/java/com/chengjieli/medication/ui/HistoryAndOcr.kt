@@ -40,7 +40,7 @@ internal fun HistoryCaseList(groups: List<HistoryCaseGroup>, onSelect: (HistoryC
     ) {
         item {
             Text("按药单查看服药记录", style = MaterialTheme.typography.titleMedium)
-            Text("选择药单，查看每次用药的日期、状态和用量。", Modifier.padding(top = 6.dp),
+            Text("选择药单查看用药汇总，再点药品查看每次服药明细。", Modifier.padding(top = 6.dp),
                 style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         if (groups.isEmpty()) item { EmptyMessage("暂无药单", "添加药单并设置提醒后，可在这里查看记录。") }
@@ -67,11 +67,93 @@ internal fun HistoryCaseList(groups: List<HistoryCaseGroup>, onSelect: (HistoryC
 }
 
 @Composable
-internal fun HistoryScreen(group: HistoryCaseGroup, intakes: List<IntakeEntity>, now: Long, onRecord: (OccurrenceEntity) -> Unit) {
+internal fun HistorySummaryScreen(
+    group: HistoryCaseGroup,
+    medications: List<MedicationEntity>,
+    now: Long,
+    onMedication: (HistoryMedicationGroup) -> Unit,
+) {
+    val medicationGroups = remember(group, medications) { historyMedicationGroups(group, medications) }
+    LazyColumn(
+        Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background),
+        contentPadding = PaddingValues(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        item {
+            Text(group.title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+            Text("共 ${medicationGroups.size} 种药品 · ${group.records.size} 条记录", Modifier.padding(top = 6.dp),
+                style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("点药品查看明细", Modifier.padding(top = 6.dp),
+                style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        if (medicationGroups.isEmpty()) item { EmptyMessage("这份药单暂无药品", "添加药品并设置提醒后，可在这里查看汇总。") }
+        items(medicationGroups, key = { it.medicationId }) { medication ->
+            Card(
+                onClick = { onMedication(medication) }, modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(20.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLowest),
+            ) {
+                Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Text(medication.name, Modifier.weight(1f), style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold)
+                        Icon(Icons.Outlined.ChevronRight, "查看${medication.name}的服药明细",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    Text(
+                        listOfNotNull(
+                            when (medication.active) {
+                                false -> "已结束"
+                                true -> group.status?.let(::planLabel)
+                                null -> null
+                            },
+                            "${medication.records.size} 条记录",
+                        ).joinToString(" · "),
+                        style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.primary,
+                    )
+                    if (medication.records.isEmpty()) {
+                        Text("暂无服药记录", style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    } else {
+                        HistoryCounts(historyStatusCounts(medication.records, now))
+                        Text("最近记录：${medication.records.first().date}", style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun HistoryCounts(counts: HistoryStatusCounts) {
+    FlowRow(
+        Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(16.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        (listOf(
+            "已服用" to counts.taken, "跳过" to counts.skipped, "待处理" to counts.pending,
+        ) + listOf("稍后等待" to counts.snoozed, "未到时" to counts.scheduled).filter { it.second > 0 }).forEach { (label, count) ->
+            Text("$label $count 次", style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
+}
+
+@Composable
+internal fun HistoryScreen(
+    group: HistoryCaseGroup,
+    intakes: List<IntakeEntity>,
+    now: Long,
+    medicationName: String? = null,
+    onRecord: (OccurrenceEntity) -> Unit,
+) {
     val seniorMode = LocalSeniorMode.current
     val today = Instant.ofEpochMilli(now).atZone(ZoneId.systemDefault()).toLocalDate()
-    var dateFilter by rememberSaveable(group.caseId) { mutableStateOf("") }
-    var datePickerOpen by rememberSaveable(group.caseId) { mutableStateOf(false) }
+    var dateFilter by rememberSaveable(group.caseId, medicationName) { mutableStateOf("") }
+    var datePickerOpen by rememberSaveable(group.caseId, medicationName) { mutableStateOf(false) }
     val selectedDate = remember(dateFilter) { runCatching { LocalDate.parse(dateFilter) }.getOrNull() }
     val intakeByOccurrence = remember(intakes) { intakes.associateBy { it.occurrenceId } }
     val filtered = remember(group.records, dateFilter) { historyRecordsForDate(group.records, dateFilter) }
@@ -81,7 +163,10 @@ internal fun HistoryScreen(group: HistoryCaseGroup, intakes: List<IntakeEntity>,
         contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 24.dp),
     ) {
         item {
-            Text(group.title, Modifier.padding(bottom = 12.dp), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+            Text(medicationName ?: group.title, Modifier.padding(bottom = 12.dp),
+                style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+            if (medicationName != null) Text("所属药单：${group.title}", Modifier.padding(bottom = 12.dp),
+                style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Card(
                 onClick = { datePickerOpen = true },
                 modifier = Modifier.fillMaxWidth(),
@@ -109,7 +194,8 @@ internal fun HistoryScreen(group: HistoryCaseGroup, intakes: List<IntakeEntity>,
             }
         }
         if (filtered.isEmpty()) item {
-            EmptyMessage(if (dateFilter.isBlank()) "这份药单暂无服药记录" else "这一天暂无记录",
+            EmptyMessage(if (dateFilter.isNotBlank()) "这一天暂无记录"
+                else if (medicationName != null) "这个药品暂无服药记录" else "这份药单暂无服药记录",
                 "到点后的用药情况会显示在这里。")
         }
         items(filtered, key = { it.id }) { item ->
@@ -237,7 +323,7 @@ internal fun OcrImportScreen(graph: AppGraph, case: CaseEntity, images: List<Str
             Text("识别在本机完成，无需上传图片。每种药都要核对后保存。", style = MaterialTheme.typography.bodyMedium)
             Spacer(Modifier.height(12.dp))
             ImageAttachments(graph, "待识别药单", images, { imageRevision++; recognized = false; onImages(it) }, single = true)
-            Text("可点击图片旋转、裁剪，尽量保留药名和用法同一行。", Modifier.padding(vertical = 8.dp), style = MaterialTheme.typography.bodySmall)
+            Text("点击图片可放大查看；使用旋转或裁剪按钮调整图片，尽量保留药名和用法同一行。", Modifier.padding(vertical = 8.dp), style = MaterialTheme.typography.bodySmall)
             Button(enabled = images.isNotEmpty() && !busy, onClick = { scope.launch {
                 busy = true; error = null
                 val inputPath = images.first()
