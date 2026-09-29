@@ -210,3 +210,11 @@ Android 8、目标 Android 16/API36 设备，以及具体手机厂商的后台�
 - API 35 专用模拟器 4 项专项检查通过（3 项真实组件交互及 1 项合成数据渲染），覆盖标记、切月返回、选日后取消不提交、跨月确认提交正确日期及 18 条记录/9 天展示。日志：`work/validation-history-calendar-verified.log`。初次测试误读 Compose 描述子节点及其父节点缓存，按实际 checkable 日期格刷新后严格验证通过；未为此修改生产逻辑。
 - 另外实际设置模拟器为 320dp 宽、系统字号 1.5 倍，普通/老年/暗色渲染及老年日历滚动至月底检查通过，月底日期、已服标记、图例与操作按钮均可访问。已目视核对截图 `work/history-days-qa/normal/`、`work/history-days-qa/narrow/`；日志 `work/validation-history-calendar-narrow-scroll.log`。测试后恢复原尺寸和字号。数据为合成记录，没有操作真实手机。
 - APK：`work/releases/history-days/medication-reminder-history-days.apk`，65,625,263 字节，沿用 versionName 1.3.2 / versionCode 6。SHA-256：`70aa32caba019d4cbbd8e521f8ff0f48dc56260c680e5e202ba0eb939f56201c`，同目录提供 `SHA256SUMS`。签名验证通过，证书 SHA-256 沿用 `49d9770c7a0078dbbe3cc45cf0cd63da4bdb6bfab06e0defbaee15349e0abaab`，模拟器覆盖安装成功；该包为本地开发包，未创建新的 APK Release。
+
+
+## v1.3.3 发布包（2026-09-29）
+
+- versionName 1.3.3 / versionCode 7，包含单药结束与恢复、药品汇总、图片全屏预览，以及本次服药日期标记和服用天数。发布打包仅提升安装版本号并更新下载说明，业务代码与 `ef2da4b` 一致。
+- JDK 17 离线 `assembleDebug` 成功，日志 `work/build-v1.3.3-release.log`。功能验证沿用前节 97 项 JVM 单测、4 项模拟器专项检查、窄屏滚动补验及 Lint 0 错误结果；版本打包后未重复执行完整业务回归，未进行真机验收。
+- APK：`work/releases/v1.3.3/medication-reminder-v1.3.3.apk`，65,084,422 字节；SHA-256：`788af374e628ba3fec7f26702e6159363b0447da2ff0bfb3d525573d90de98fc`。同目录提供 `SHA256SUMS`。
+- APK manifest 核实 applicationId `com.chengjieli.medication`、版本 1.3.3/7、minSdk 26、targetSdk 36；v2 签名验证通过，证书 SHA-256 沿用 `49d9770c7a0078dbbe3cc45cf0cd63da4bdb6bfab06e0defbaee15349e0abaab`。
