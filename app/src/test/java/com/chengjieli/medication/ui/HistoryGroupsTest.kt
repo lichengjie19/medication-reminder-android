@@ -8,6 +8,8 @@ import com.chengjieli.medication.data.PlanStatus
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
+import java.time.Instant
+import java.time.LocalDate
 
 class HistoryGroupsTest {
     @Test fun sameTitleDoesNotMergeDifferentCasesAndMissingCaseKeepsHistoricalTitle() {
@@ -84,6 +86,61 @@ class HistoryGroupsTest {
         assertEquals(listOf(records.first()), historyRecordsForDate(records, "2026-09-20"))
         assertEquals(listOf(records.last()), historyRecordsForDate(records, "2026-09-21"))
         assertEquals(emptyList<OccurrenceEntity>(), historyRecordsForDate(records, "2026-09-19"))
+    }
+
+    @Test fun takenDatesCountMultipleDosesOnTheSameDayOnce() {
+        val records = (1..9).flatMap { day ->
+            listOf("morning", "evening").map { time ->
+                record("$day-$time", "case", 100, OccurrenceStatus.TAKEN)
+                    .copy(date = LocalDate.of(2026, 9, day).toString())
+            }
+        }
+
+        assertEquals(18, records.size)
+        assertEquals((1..9).map { LocalDate.of(2026, 9, it) }.toSet(), historyTakenDates(records))
+    }
+
+    @Test fun takenDatesKeepDistinctDatesAcrossMonthsAndYears() {
+        val dates = listOf("2025-12-31", "2026-01-01", "2026-01-31", "2026-02-01")
+        val records = dates.map { date ->
+            record(date, "case", 100, OccurrenceStatus.TAKEN).copy(date = date)
+        }
+
+        assertEquals(dates.map(LocalDate::parse).toSet(), historyTakenDates(records))
+    }
+
+    @Test fun takenDatesExcludeSkippedAndUnfinishedRecords() {
+        val records = listOf(
+            record("taken", "case", 100, OccurrenceStatus.TAKEN).copy(date = "2026-09-20"),
+            record("skipped", "case", 100, OccurrenceStatus.SKIPPED).copy(date = "2026-09-21"),
+            record("pending", "case", 100, OccurrenceStatus.PENDING).copy(date = "2026-09-22"),
+            record("snoozed", "case", 100, OccurrenceStatus.SNOOZED).copy(date = "2026-09-23"),
+            record("scheduled", "case", 100, OccurrenceStatus.SCHEDULED).copy(date = "2026-09-24"),
+        )
+
+        assertEquals(setOf(LocalDate.of(2026, 9, 20)), historyTakenDates(records))
+    }
+
+    @Test fun takenDatesUseScheduledDateWhenReminderAndCompletionCrossMidnight() {
+        val record = record(
+            "taken-after-midnight", "case", Instant.parse("2026-09-20T23:55:00Z").toEpochMilli(),
+            OccurrenceStatus.TAKEN,
+        ).copy(
+            date = "2026-09-20",
+            roundAt = Instant.parse("2026-09-21T00:05:00Z").toEpochMilli(),
+            processedAt = Instant.parse("2026-09-21T00:10:00Z").toEpochMilli(),
+        )
+
+        assertEquals(setOf(LocalDate.of(2026, 9, 20)), historyTakenDates(listOf(record)))
+    }
+
+    @Test fun takenDatesHandleEmptyHistoryAndIgnoreInvalidDates() {
+        val records = listOf("", "not-a-date", "2026-02-30", "2026-13-01", "2026-09-20").map { date ->
+            record(date, "case", 100, OccurrenceStatus.TAKEN).copy(date = date)
+        }
+
+        assertEquals(emptySet<LocalDate>(), historyTakenDates(emptyList()))
+        assertEquals(setOf(LocalDate.of(2026, 9, 20)), historyTakenDates(records))
     }
 
     @Test fun medicationSummaryKeepsSameNameMedicinesSeparateAndPrefersCurrentName() {

@@ -5,6 +5,8 @@ import com.chengjieli.medication.data.MedicationEntity
 import com.chengjieli.medication.data.OccurrenceEntity
 import com.chengjieli.medication.data.OccurrenceStatus
 import com.chengjieli.medication.data.PlanStatus
+import java.time.LocalDate
+import java.time.format.DateTimeParseException
 
 internal data class HistoryCaseGroup(
     val caseId: String,
@@ -95,3 +97,15 @@ internal fun historyCaseGroups(
 // Dates belong to the original scheduled occurrence, including reminders snoozed past midnight.
 internal fun historyRecordsForDate(records: List<OccurrenceEntity>, date: String): List<OccurrenceEntity> =
     if (date.isBlank()) records else records.filter { it.date == date }
+
+// Use the same scheduled-date attribution as historyRecordsForDate, counting each taken day once.
+internal fun historyTakenDates(records: List<OccurrenceEntity>): Set<LocalDate> = records.asSequence()
+    .filter { it.status == OccurrenceStatus.TAKEN }
+    .mapNotNull {
+        try {
+            LocalDate.parse(it.date)
+        } catch (_: DateTimeParseException) {
+            null
+        }
+    }
+    .toSet()

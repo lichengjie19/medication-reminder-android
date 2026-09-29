@@ -27,7 +27,6 @@ import kotlinx.coroutines.launch
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
-import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
 import java.util.Locale
 
@@ -88,6 +87,7 @@ internal fun HistorySummaryScreen(
         }
         if (medicationGroups.isEmpty()) item { EmptyMessage("这份药单暂无药品", "添加药品并设置提醒后，可在这里查看汇总。") }
         items(medicationGroups, key = { it.medicationId }) { medication ->
+            val takenDays = remember(medication.records) { historyTakenDates(medication.records).size }
             Card(
                 onClick = { onMedication(medication) }, modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(20.dp),
@@ -109,6 +109,7 @@ internal fun HistorySummaryScreen(
                                 null -> null
                             },
                             "${medication.records.size} 条记录",
+                            "$takenDays 天",
                         ).joinToString(" · "),
                         style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.primary,
                     )
@@ -157,6 +158,7 @@ internal fun HistoryScreen(
     val selectedDate = remember(dateFilter) { runCatching { LocalDate.parse(dateFilter) }.getOrNull() }
     val intakeByOccurrence = remember(intakes) { intakes.associateBy { it.occurrenceId } }
     val filtered = remember(group.records, dateFilter) { historyRecordsForDate(group.records, dateFilter) }
+    val takenDates = remember(group.records) { historyTakenDates(group.records) }
 
     LazyColumn(
         Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background),
@@ -203,37 +205,10 @@ internal fun HistoryScreen(
         }
     }
     if (datePickerOpen) {
-        HistoryDatePicker(selectedDate ?: today, { datePickerOpen = false }) {
+        HistoryDatePicker(selectedDate ?: today, takenDates, { datePickerOpen = false }) {
             dateFilter = it.toString()
             datePickerOpen = false
         }
-    }
-}
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun HistoryDatePicker(initialDate: LocalDate, dismiss: () -> Unit, selected: (LocalDate) -> Unit) {
-    val pickerState = rememberDatePickerState(
-        initialSelectedDateMillis = initialDate.atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli(),
-    )
-    DatePickerDialog(
-        onDismissRequest = dismiss,
-        confirmButton = {
-            TextButton(enabled = pickerState.selectedDateMillis != null, onClick = {
-                pickerState.selectedDateMillis?.let { selected(Instant.ofEpochMilli(it).atZone(ZoneOffset.UTC).toLocalDate()) }
-            }) { Text("查看记录") }
-        },
-        dismissButton = { TextButton(onClick = dismiss) { Text("取消") } },
-    ) {
-        DatePicker(
-            state = pickerState,
-            showModeToggle = false,
-            title = { Text("选择记录日期", Modifier.padding(start = 24.dp, end = 24.dp, top = 16.dp), style = MaterialTheme.typography.labelLarge) },
-            headline = {
-                val date = pickerState.selectedDateMillis?.let { Instant.ofEpochMilli(it).atZone(ZoneOffset.UTC).toLocalDate() }
-                Text(date?.format(DateTimeFormatter.ofPattern("yyyy年M月d日")) ?: "选择日期", Modifier.padding(horizontal = 24.dp, vertical = 12.dp), style = MaterialTheme.typography.titleLarge)
-            },
-        )
     }
 }
 

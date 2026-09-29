@@ -200,3 +200,13 @@ Android 8、目标 Android 16/API36 设备，以及具体手机厂商的后台�
 - 当前开发分支包含单药结束与恢复、按药品汇总服药记录、图片全屏预览。JDK 17 离线执行 `testDebugUnitTest assembleDebug assembleDebugAndroidTest lintDebug` 成功。
 - 92 项 JVM 单测通过，0 失败、0 错误、0 跳过；Lint 0 错误、29 条建议。日志：`work/remote-sync-validation.log`。
 - 本轮仅构建设备测试 APK，未重新执行模拟器或真机测试；应用版本号仍为 1.3.2 / 6，未创建新的 APK Release。
+
+## 服药日期标记与服用天数（2026-09-29，本地开发包）
+
+- 药品明细日期选择器在已服用日期下显示圆点，选中日期使用反色圆点，提供「当天已服药」图例和可读出的日期状态；保留切月、选年、取消和查看记录。窄屏大字时正文可滚动，底部操作固定。
+- 药品汇总追加「N 天」，仅统计该药品 `TAKEN` 记录的不同日期，同日多次算一天，跳过和未处理记录不计入。日期标记与天数共用统计函数，按 `OccurrenceEntity.date` 归属，与原有历史筛选一致。未修改数据表、备份格式或提醒规则。
+- JDK 17 离线构建应用及测试 APK 成功；97 项 JVM 单测通过，0 失败、0 错误、0 跳过。新增 5 项覆盖 18 次/9 天、跨月跨年、排除其他状态、跨午夜日期归属和空/无效日期。日志：`work/build-history-days.log`、`work/build-history-days-final.log`。
+- 最终生产代码 Lint 0 错误、29 条建议，日志：`work/lint-history-days-final.log`。
+- API 35 专用模拟器 4 项专项检查通过（3 项真实组件交互及 1 项合成数据渲染），覆盖标记、切月返回、选日后取消不提交、跨月确认提交正确日期及 18 条记录/9 天展示。日志：`work/validation-history-calendar-verified.log`。初次测试误读 Compose 描述子节点及其父节点缓存，按实际 checkable 日期格刷新后严格验证通过；未为此修改生产逻辑。
+- 另外实际设置模拟器为 320dp 宽、系统字号 1.5 倍，普通/老年/暗色渲染及老年日历滚动至月底检查通过，月底日期、已服标记、图例与操作按钮均可访问。已目视核对截图 `work/history-days-qa/normal/`、`work/history-days-qa/narrow/`；日志 `work/validation-history-calendar-narrow-scroll.log`。测试后恢复原尺寸和字号。数据为合成记录，没有操作真实手机。
+- APK：`work/releases/history-days/medication-reminder-history-days.apk`，65,625,263 字节，沿用 versionName 1.3.2 / versionCode 6。SHA-256：`70aa32caba019d4cbbd8e521f8ff0f48dc56260c680e5e202ba0eb939f56201c`，同目录提供 `SHA256SUMS`。签名验证通过，证书 SHA-256 沿用 `49d9770c7a0078dbbe3cc45cf0cd63da4bdb6bfab06e0defbaee15349e0abaab`，模拟器覆盖安装成功；该包为本地开发包，未创建新的 APK Release。
